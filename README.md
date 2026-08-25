@@ -28,15 +28,15 @@ agent_logs/<agent>/<bottom-3-path-components>.txt
 The filename is just the last three path components of the project directory
 (joined with `-`), because the agent is implied by the containing folder and
 you are unlikely to run two conversations in the same project at once.
-Example: a session run in `E:\lab\Group_meeting\202608` becomes
-`claude/lab-Group_meeting-202608.txt`.
+Example: a session run in `D:\projects\agent-integration\v2` becomes
+`claude/agent-integration-v2.txt`.
 
 Each file starts with metadata, then the conversation:
 
 ```
 # Agent: claude
-# Path: E:\lab\Group_meeting\202608
-# Session: 0181fb85...
+# Path: D:\projects\agent-integration\v2
+# Session: <session-id>
 # Start (Beijing): 2026-08-17 11:50:03
 # Messages: 12
 
@@ -57,7 +57,7 @@ You can ...
 
 ```bash
 # 1. clone / copy this folder anywhere
-git clone <your-fork> agentlog
+git clone <repository-url> agentlog
 cd agentlog
 
 # 2. one-time scan (good for a quick test)

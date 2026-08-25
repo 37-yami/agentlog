@@ -20,14 +20,14 @@ agent_logs/<agent>/<最底层三个路径>.txt
 ```
 
 文件名只用项目目录的**最底层三个路径组件**(用 `-` 连接)。因为 agent 已经由所在文件夹体现,而你不太可能在同一项目里同时开两个对话,所以不需要 agent 前缀或时间戳。
-示例:在 `E:\lab\Group_meeting\202608` 下的会话生成 `claude/lab-Group_meeting-202608.txt`。
+示例:在 `D:\projects\agent-integration\v2` 下的会话生成 `claude/agent-integration-v2.txt`。
 
 每个文件开头是元信息,然后是对话内容:
 
 ```
 # Agent: claude
-# Path: E:\lab\Group_meeting\202608
-# Session: 0181fb85...
+# Path: D:\projects\agent-integration\v2
+# Session: <session-id>
 # Start (Beijing): 2026-08-17 11:50:03
 # Messages: 12
 
@@ -47,7 +47,7 @@ agent_logs/<agent>/<最底层三个路径>.txt
 
 ```bash
 # 1. 克隆/复制本目录到任意位置
-git clone <你的仓库地址> agentlog
+git clone <仓库地址> agentlog
 cd agentlog
 
 # 2. 先做一次手动扫描(快速测试)

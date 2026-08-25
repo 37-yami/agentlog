@@ -1,0 +1,15 @@
+# Generated exports (one .txt per conversation window)
+agent_logs/
+
+# Runtime files
+*.log
+*.state.json
+agentlog.pid
+agentlog.lock
+
+# Python
+__pycache__/
+*.pyc
+
+# Local agent config (users keep their own)
+agents.json

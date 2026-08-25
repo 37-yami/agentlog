@@ -1,0 +1,37 @@
+{
+  "agents": [
+    {
+      "name": "codebuddy",
+      "parser": "codebuddy",
+      "globs": ["~/.codebuddy/projects/**/*.jsonl"]
+    },
+    {
+      "name": "pi",
+      "parser": "pi",
+      "globs": ["~/.pi/agent/sessions/**/*.jsonl"]
+    },
+    {
+      "name": "claude",
+      "parser": "claude",
+      "globs": ["~/.claude/projects/**/*.jsonl"]
+    },
+    {
+      "name": "opencode",
+      "parser": "opencode",
+      "globs": [
+        "~/.config/opencode/**/session/*.jsonl",
+        "~/.local/share/opencode/**/*.jsonl"
+      ]
+    },
+    {
+      "name": "codex",
+      "parser": "generic",
+      "globs": ["~/.codex/**/*.jsonl", "~/.config/codex/**/*.jsonl"]
+    },
+    {
+      "name": "mimo",
+      "parser": "generic",
+      "globs": ["~/.mimo/**/*.jsonl", "~/.config/mimo/**/*.jsonl"]
+    }
+  ]
+}

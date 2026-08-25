@@ -1,5 +1,7 @@
 # agentlog
 
+> **English** | [中文](README_zh.md)
+
 Capture CLI agent conversations into the project directory they ran in.
 
 When you run coding agents (CodeBuddy, pi, Claude Code, OpenCode, …) from many

@@ -579,10 +579,33 @@ def run_loop():
 # --------------------------------------------------------------------------
 # Control: start / stop / status / install / uninstall
 # --------------------------------------------------------------------------
+# Hide the console window for child console processes (e.g. when the GUI runs
+# under pythonw and spawns tasklist / powershell / taskkill). 0 on non-Windows.
+CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
+
+def _detach_streams():
+    """When launched by pythonw (no console), stdout/stderr/stdin are None.
+    Redirect them so print()/input() never crash and messages land in the log."""
+    if sys.stdout is None:
+        try:
+            sys.stdout = open(LOG_FILE, "a", encoding="utf-8")
+        except Exception:
+            sys.stdout = open(os.devnull, "w", encoding="utf-8")
+    if sys.stderr is None:
+        try:
+            sys.stderr = open(LOG_FILE, "a", encoding="utf-8")
+        except Exception:
+            sys.stderr = open(os.devnull, "w", encoding="utf-8")
+    if sys.stdin is None:
+        sys.stdin = open(os.devnull, "r", encoding="utf-8")
+
+
 def run_cmd(args):
     """Run a command, decode output safely (Windows consoles are GBK)."""
     try:
-        r = subprocess.run(args, capture_output=True)
+        r = subprocess.run(args, capture_output=True,
+                           creationflags=CREATE_NO_WINDOW)
         out = (r.stdout or b"").decode("utf-8", "replace")
         err = (r.stderr or b"").decode("utf-8", "replace")
         return r.returncode, out, err
@@ -645,26 +668,59 @@ def read_pid():
 
 
 def is_running(pid):
+    """True if a process with this pid is still alive. Uses a lightweight
+    ctypes check (no external process) so the GUI's status poll every few
+    seconds does NOT spawn a visible console window."""
     if not pid:
         return False
+    if sys.platform != "win32":
+        try:
+            os.kill(pid, 0)
+            return True
+        except OSError:
+            return False
     try:
-        rc, out, _ = run_cmd(["tasklist", "/FI", f"PID eq {pid}"])
-        return rc == 0 and str(pid) in out
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.OpenProcess.argtypes = [ctypes.wintypes.DWORD,
+                                         ctypes.wintypes.BOOL, ctypes.wintypes.DWORD]
+        kernel32.OpenProcess.restype = ctypes.wintypes.HANDLE
+        kernel32.WaitForSingleObject.argtypes = [ctypes.wintypes.HANDLE,
+                                                 ctypes.wintypes.DWORD]
+        kernel32.WaitForSingleObject.restype = ctypes.wintypes.DWORD
+        kernel32.CloseHandle.argtypes = [ctypes.wintypes.HANDLE]
+        kernel32.CloseHandle.restype = ctypes.wintypes.BOOL
+        # PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE
+        h = kernel32.OpenProcess(0x1000 | 0x00100000, False, pid)
+        if not h:
+            return False
+        try:
+            # WAIT_TIMEOUT (258) => still running; WAIT_OBJECT_0 (0) => exited
+            return kernel32.WaitForSingleObject(h, 0) == 0x00000102
+        finally:
+            kernel32.CloseHandle(h)
     except Exception:
-        return False
+        # Fallback: ask tasklist (rarely hit on Windows).
+        try:
+            rc, out, _ = run_cmd(["tasklist", "/FI", f"PID eq {pid}"])
+            return rc == 0 and str(pid) in out
+        except Exception:
+            return False
 
 
 def _find_agentlog_pids():
-    """Return pids of python/pythonw processes whose command line contains
-    'agentlog.py'. Uses PowerShell (reliable on Windows) and falls back to the
-    pid-file pid when PowerShell is unavailable."""
+    """Return pids of python/pythonw processes running the *daemon*
+    (agentlog.py). Explicitly excludes the GUI (agentlog_gui.py) so that
+    stopping/restarting the daemon never kills the GUI itself. Uses PowerShell
+    (hidden window) and falls back to the pid-file pid when PowerShell is
+    unavailable."""
     pids = []
     try:
         rc, out, _ = run_cmd([
             "powershell", "-NoProfile", "-NonInteractive", "-Command",
             "Get-CimInstance Win32_Process -Filter \"name='pythonw.exe' or "
             "name='python.exe'\" | Where-Object { $_.CommandLine -like "
-            "'*agentlog.py*' } | ForEach-Object { $_.ProcessId }"
+            "'*agentlog.py*' -and $_.CommandLine -notlike '*agentlog_gui.py*' } "
+            "| ForEach-Object { $_.ProcessId }"
         ])
         if rc == 0:
             for tok in out.split():
@@ -685,12 +741,14 @@ def _kill_all_agentlog():
     (handles strays / duplicates). Falls back to the pid-file pid."""
     pids = []
     for pid in _find_agentlog_pids():
-        subprocess.run(["taskkill", "/PID", str(pid), "/F"], capture_output=True)
+        subprocess.run(["taskkill", "/PID", str(pid), "/F"],
+                       capture_output=True, creationflags=CREATE_NO_WINDOW)
         pids.append(str(pid))
     if not pids:
         pid = read_pid()
         if pid and is_running(pid):
-            subprocess.run(["taskkill", "/PID", str(pid), "/F"], capture_output=True)
+            subprocess.run(["taskkill", "/PID", str(pid), "/F"],
+                           capture_output=True, creationflags=CREATE_NO_WINDOW)
             pids.append(str(pid))
     return pids
 
@@ -985,6 +1043,7 @@ def cmd_build_icon(src):
 
 
 def main():
+    _detach_streams()
     ap = argparse.ArgumentParser(description="Capture CLI agent conversations.")
     ap.add_argument("action", nargs="?", default="once",
                     choices=["run", "once", "start", "stop",

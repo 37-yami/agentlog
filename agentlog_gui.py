@@ -422,6 +422,7 @@ class AgentLogGUI:
 
 
 def main():
+    core._detach_streams()
     root = tk.Tk()
     app = AgentLogGUI(root)
     # if launched and a tray is desired by default, start minimized? Keep window

@@ -435,7 +435,10 @@ def load_agents():
     for a in agents.values():
         parser = PARSERS.get(a.get("parser"), parse_generic)
         globs = [os.path.expanduser(g) for g in a.get("globs", [])]
-        result.append({"agent": a["name"], "parser": parser, "globs": globs})
+        entry = {"agent": a["name"], "parser": parser, "globs": globs}
+        if a.get("source"):
+            entry["source"] = a["source"]
+        result.append(entry)
     return result
 
 

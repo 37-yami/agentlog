@@ -35,6 +35,9 @@ from datetime import datetime, timezone, timedelta
 HERE = os.path.dirname(os.path.abspath(__file__))
 # All conversation exports go under <repo>/agent_logs/<agent>/...
 OUTPUT_ROOT = os.path.join(HERE, "agent_logs")
+# Optional icon (built from a source image, see build_icon()). The GUI and the
+# launcher shortcut use it when present; otherwise a default system icon is used.
+ICON_PATH = os.path.join(HERE, "agentlog.ico")
 POLL_SECONDS = 5
 # Drop assistant lines that are just narration right before a tool call
 # (these are the "thinking out loud" bits the user does not want kept).
@@ -815,7 +818,7 @@ class _IPersistFile(ctypes.Structure):
     _fields_ = [("lpVtbl", ctypes.POINTER(_IPersistFileVtbl))]
 
 
-def create_shortcut(lnk_path, target, args="", workdir=""):
+def create_shortcut(lnk_path, target, args="", workdir="", icon=""):
     """Create a .lnk shortcut. Windows-only, stdlib-only (ctypes COM)."""
     ole32 = ctypes.OleDLL("ole32")
     ole32.CoInitialize(None)
@@ -836,6 +839,13 @@ def create_shortcut(lnk_path, target, args="", workdir=""):
             m("SetArguments")(shell_link, args)
         if workdir:
             m("SetWorkingDirectory")(shell_link, workdir)
+        if icon:
+            # SetIconLocation(LPCWSTR pszIconPath, int iIcon)
+            set_icon = ctypes.cast(vtbl.contents.SetIconLocation,
+                                   ctypes.WINFUNCTYPE(wt.LONG,
+                                                     ctypes.POINTER(_IShellLinkW),
+                                                     ctypes.c_wchar_p, wt.INT))
+            set_icon(shell_link, icon, 0)
         ppv = ctypes.c_void_p()
         QI = ctypes.cast(vtbl.contents.QueryInterface, ctypes.WINFUNCTYPE(
             wt.LONG, ctypes.POINTER(_IShellLinkW), ctypes.POINTER(_GUID),
@@ -909,15 +919,78 @@ def cmd_uninstall():
         print("registry autostart removed.")
     except FileNotFoundError:
         pass
-    except Exception as e:
-        print("autostart removal note:", e)
+
+
+def gui_exe_and_script():
+    exe = pythonw_exe()
+    script = os.path.join(HERE, "agentlog_gui.py")
+    return exe, script
+
+
+def cmd_gui_shortcut():
+    """Create a double-click launcher for the GUI: a .lnk that runs
+    `pythonw agentlog_gui.py` (no console window) with the agentlog icon.
+    Places one next to this repo and one on the Desktop."""
+    exe, script = gui_exe_and_script()
+    icon = ICON_PATH if os.path.exists(ICON_PATH) else ""
+    targets = [os.path.join(HERE, "agentlog-gui.lnk")]
+    desktop = os.path.join(os.path.expanduser("~"), "Desktop")
+    if os.path.isdir(desktop):
+        targets.append(os.path.join(desktop, "agentlog 界面.lnk"))
+    created = []
+    for lnk in targets:
+        try:
+            create_shortcut(lnk, exe, f'"{script}"', HERE, icon)
+            created.append(lnk)
+        except Exception as e:
+            print(f"could not create shortcut {lnk}: {e}")
+    if created:
+        print("GUI launcher created (double-click to run, no console):")
+        for p in created:
+            print("  ", p)
+    else:
+        print("no GUI launcher created.")
+
+
+def build_icon(src, dest=ICON_PATH, sizes=(16, 32, 48, 64, 128, 256)):
+    """Render a source image (any format Pillow reads) into a multi-size
+    .ico for the tray / window / shortcut. Needs Pillow; this is a build-time
+    helper, not required at runtime (the .ico is shipped)."""
+    try:
+        from PIL import Image
+    except ImportError:
+        print("Pillow is required to build the icon: pip install Pillow")
+        return False
+    im = Image.open(src).convert("RGBA")
+    # center-crop to a square, then fit the largest size
+    w, h = im.size
+    s = min(w, h)
+    left = (w - s) // 2
+    top = (h - s) // 2
+    im = im.crop((left, top, left + s, top + s)).resize((max(sizes),) * 2,
+                                                         Image.LANCZOS)
+    im.save(dest, format="ICO", sizes=[(sz, sz) for sz in sizes])
+    print("icon written:", dest)
+    return True
+
+
+def cmd_build_icon(src):
+    if not src:
+        print("usage: python agentlog.py build-icon <path-to-image>")
+        return
+    if not os.path.exists(src):
+        print("image not found:", src)
+        return
+    build_icon(src)
 
 
 def main():
     ap = argparse.ArgumentParser(description="Capture CLI agent conversations.")
     ap.add_argument("action", nargs="?", default="once",
                     choices=["run", "once", "start", "stop",
-                             "status", "install", "uninstall"])
+                             "status", "install", "uninstall",
+                             "gui-shortcut", "build-icon"])
+    ap.add_argument("path", nargs="?", default="")
     args = ap.parse_args()
 
     if args.action == "run":
@@ -939,6 +1012,10 @@ def main():
         cmd_install()
     elif args.action == "uninstall":
         cmd_uninstall()
+    elif args.action == "gui-shortcut":
+        cmd_gui_shortcut()
+    elif args.action == "build-icon":
+        cmd_build_icon(args.path)
 
 
 if __name__ == "__main__":

@@ -12,3 +12,9 @@ __pycache__/
 
 # Local agent config (users keep their own)
 agents.json
+
+# Generated launcher shortcuts (machine-specific absolute paths)
+*.lnk
+
+# Icon is committed, but a leftover build artifact if regenerated elsewhere
+# (agentlog.ico is tracked on purpose)

@@ -19,6 +19,7 @@ from tkinter import ttk, messagebox
 import agentlog as core  # reuse cmd_*/scan_once/paths
 
 OUTPUT_ROOT = core.OUTPUT_ROOT
+ICON_PATH = core.ICON_PATH  # optional .ico next to the script
 
 
 # --------------------------------------------------------------------------
@@ -49,6 +50,8 @@ def _build_tray(notify, restore, quit_app):
     TPM_RETURNCMD = 0x0100
     HWND_MESSAGE = ctypes.c_void_p(-3)
     IDI_APPLICATION = ctypes.c_void_p(32512)
+    IMAGE_ICON = 1
+    LR_LOADFROMFILE = 0x00000010
 
     HWND = ctypes.wintypes.HWND
     HMENU = ctypes.wintypes.HMENU
@@ -137,6 +140,10 @@ def _build_tray(notify, restore, quit_app):
     user32.CreateWindowExW.restype = HWND
     user32.LoadIconW.argtypes = [ctypes.wintypes.HANDLE, ctypes.c_void_p]
     user32.LoadIconW.restype = ctypes.wintypes.HANDLE
+    user32.LoadImageW.argtypes = [ctypes.wintypes.HANDLE, ctypes.c_wchar_p,
+                                  ctypes.wintypes.UINT, ctypes.c_int, ctypes.c_int,
+                                  ctypes.wintypes.UINT]
+    user32.LoadImageW.restype = ctypes.wintypes.HANDLE
     user32.DestroyWindow.argtypes = [HWND]
     user32.DestroyWindow.restype = BOOL
     user32.UnregisterClassW.argtypes = [ctypes.c_wchar_p, ctypes.wintypes.HANDLE]
@@ -183,7 +190,13 @@ def _build_tray(notify, restore, quit_app):
     if not hwnd:
         return None
 
-    hicon = user32.LoadIconW(None, IDI_APPLICATION)
+    if os.path.exists(ICON_PATH):
+        hicon = user32.LoadImageW(None, ICON_PATH, IMAGE_ICON, 0, 0,
+                                  LR_LOADFROMFILE)
+        if not hicon:
+            hicon = user32.LoadIconW(None, IDI_APPLICATION)
+    else:
+        hicon = user32.LoadIconW(None, IDI_APPLICATION)
     nid = NOTIFYICONDATA()
     nid.cbSize = ctypes.sizeof(NOTIFYICONDATA)
     nid.hWnd = hwnd
@@ -225,6 +238,11 @@ class AgentLogGUI:
         root.minsize(560, 360)
 
         self.tray_teardown = None
+        if os.path.exists(ICON_PATH):
+            try:
+                root.iconbitmap(ICON_PATH)
+            except Exception:
+                pass
         self._build_widgets()
         self.refresh_status()
         self.refresh_exports()

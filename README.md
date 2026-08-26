@@ -86,6 +86,8 @@ That is it. The daemon polls every 5 seconds; idle CPU is ~0.
 | `python agentlog.py status` | Is the daemon running? |
 | `python agentlog.py install` | Enable logon auto-start (Startup shortcut) + start now |
 | `python agentlog.py uninstall` | Stop + remove the Startup shortcut |
+| `python agentlog.py gui-shortcut` | Create a double-click GUI launcher (repo dir + Desktop) |
+| `python agentlog.py build-icon <img>` | Regenerate `agentlog.ico` (tray/window/shortcut) from an image |
 
 ## GUI
 
@@ -111,6 +113,31 @@ Closing the window (the × button) does **not** quit — it minimizes to the
 **Right-click** the tray icon for a menu (Open window / Start / Stop / Open
 exports / Quit); a **left-click** restores the window. To fully exit, use
 "Quit" in the tray menu or the "Quit" button.
+
+### Double-click to run
+
+Prefer not to open a terminal? Generate a launcher you can just double-click —
+it runs via `pythonw`, so there is **no black console window**:
+
+```bash
+python agentlog.py gui-shortcut
+```
+
+This creates `agentlog-gui.lnk` next to the repo and `agentlog GUI.lnk` on the
+Desktop. Double-click either to launch the GUI. The icon comes from
+`agentlog.ico` shipped in the repo.
+
+### Changing the icon
+
+The tray, window title bar, and shortcut all use `agentlog.ico` in the repo.
+To use your own image (e.g. an anime avatar), regenerate it with Pillow
+(only needed at build time — not at runtime):
+
+```bash
+python agentlog.py build-icon D:/path/to/your-image.jpg
+```
+
+Then re-run `gui-shortcut` so the launcher picks up the new icon.
 
 ## Single instance
 
@@ -160,6 +187,7 @@ Each parser keeps only `user`/`assistant` messages. It additionally:
 
 - `agentlog.py` — the tool (daemon + CLI + per-agent parsers).
 - `agentlog_gui.py` — optional GUI (window + system tray), reusing the above logic.
+- `agentlog.ico` — icon file (tray / window title bar / shortcut).
 - `agents.example.json` — optional config template.
 - `agent_logs/` — generated exports (git-ignored; safe to delete).
 

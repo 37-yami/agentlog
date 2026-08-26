@@ -76,6 +76,8 @@ python agentlog.py install
 | `python agentlog.py status` | 查看守护进程是否在运行 |
 | `python agentlog.py install` | 启用开机自启(启动文件夹快捷方式)+ 立即启动 |
 | `python agentlog.py uninstall` | 停止并移除启动快捷方式 |
+| `python agentlog.py gui-shortcut` | 生成 GUI 双击启动快捷方式(仓库内 + 桌面) |
+| `python agentlog.py build-icon <图片>` | 用任意图片重新生成托盘/窗口/快捷方式用的 `agentlog.ico` |
 
 ## 图形界面(GUI)
 
@@ -93,6 +95,26 @@ python agentlog_gui.py
 - **打开导出目录**、**最小化到托盘**、**退出** 按钮。
 
 点击窗口右上角关闭(×)时,程序不会退出,而是**最小化到系统托盘**(右下角通知区),保留守护进程的实时状态。在托盘图标上**右键**可弹出菜单(打开主界面 / 启动 / 停止 / 打开导出目录 / 退出),**左键**单击则恢复主窗口。完全退出请使用托盘菜单里的"退出"或窗口里的"退出"按钮。
+
+### 双击即可运行
+
+不想开命令行,可以生成一个**双击就能打开、且没有黑色控制台窗口**的快捷方式:
+
+```bash
+python agentlog.py gui-shortcut
+```
+
+它会在仓库目录里生成 `agentlog-gui.lnk`,并在桌面生成 `agentlog 界面.lnk`。双击任意一个即可启动 GUI(内部用 `pythonw` 运行,无控制台)。图标用的是仓库里的 `agentlog.ico`。
+
+### 更换图标
+
+托盘、窗口标题栏和快捷方式的图标都来自仓库里的 `agentlog.ico`。想换成自己的图(比如一张二次元头像),用 Pillow(仅构建时用,运行时不依赖)即可重新生成:
+
+```bash
+python agentlog.py build-icon D:/path/to/your-image.jpg
+```
+
+生成后重新跑一次 `gui-shortcut` 让快捷方式也用上新图标。
 
 ## 单实例运行
 
@@ -135,6 +157,7 @@ cp agents.example.json agents.json   # 可选;按需编辑
 
 - `agentlog.py` — 工具本体(守护进程 + CLI + 各 agent 解析器)。
 - `agentlog_gui.py` — 可选的图形界面(窗口 + 系统托盘,复用上面的逻辑)。
+- `agentlog.ico` — 图标文件(托盘 / 窗口标题栏 / 快捷方式使用)。
 - `agents.example.json` — 可选配置模板。
 - `agent_logs/` — 生成的导出文件(已被 git 忽略,可安全删除)。
 

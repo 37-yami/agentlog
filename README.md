@@ -87,6 +87,31 @@ That is it. The daemon polls every 5 seconds; idle CPU is ~0.
 | `python agentlog.py install` | Enable logon auto-start (Startup shortcut) + start now |
 | `python agentlog.py uninstall` | Stop + remove the Startup shortcut |
 
+## GUI
+
+Prefer a window over the command line? There is a tiny, zero-dependency UI
+(`agentlog_gui.py`, built only on `tkinter` + `ctypes` — nothing to `pip install`):
+
+```bash
+python agentlog_gui.py
+```
+
+The window offers:
+
+- A **status** line (running / stopped and the pid), plus **Start / Stop /
+  Restart / Scan now** buttons;
+- An **auto-start** toggle (maps to the `.lnk` in the Startup folder — check to
+  install, uncheck to uninstall);
+- A **list of exported files** (grouped by agent / project); double-click one to
+  open it in the default program;
+- **Open export folder**, **Minimize to tray**, and **Quit** buttons.
+
+Closing the window (the × button) does **not** quit — it minimizes to the
+**system tray** (notification area) so the daemon's live status stays visible.
+**Right-click** the tray icon for a menu (Open window / Start / Stop / Open
+exports / Quit); a **left-click** restores the window. To fully exit, use
+"Quit" in the tray menu or the "Quit" button.
+
 ## Single instance
 
 `agentlog` guarantees exactly one daemon at a time. If one is already running
@@ -134,6 +159,7 @@ Each parser keeps only `user`/`assistant` messages. It additionally:
 ## Files
 
 - `agentlog.py` — the tool (daemon + CLI + per-agent parsers).
+- `agentlog_gui.py` — optional GUI (window + system tray), reusing the above logic.
 - `agents.example.json` — optional config template.
 - `agent_logs/` — generated exports (git-ignored; safe to delete).
 

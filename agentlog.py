@@ -26,6 +26,7 @@ import uuid
 import ctypes
 import argparse
 import subprocess
+import sqlite3
 import ctypes.wintypes as wt
 from datetime import datetime, timezone, timedelta
 
@@ -407,6 +408,7 @@ DEFAULT_AGENTS = [
     {"name": "claude", "parser": "claude",
      "globs": [r"~/.claude/projects/**/*.jsonl"]},
     {"name": "opencode", "parser": "opencode",
+     "source": "opencode_db",
      "globs": [r"~/.config/opencode/**/session/*.jsonl",
                r"~/.local/share/opencode/**/*.jsonl"]},
     # Best-effort stubs for future agents (adjust globs/parser as needed):
@@ -468,57 +470,138 @@ def exports_fallback(agent):
     return d
 
 
+def write_export(agent, cwd, sid, start, msgs, key, mtime, size, state):
+    """Dedupe + render + write one conversation export. Shared by the file
+    parser and the opencode SQLite ingestion."""
+    prev = state.get(key)
+    if prev and prev.get("mtime") == mtime and prev.get("size") == size:
+        return False  # unchanged
+
+    if not msgs:
+        state[key] = {"mtime": mtime, "size": size, "out": None}
+        return False
+
+    out_dir = os.path.join(OUTPUT_ROOT, agent)
+    try:
+        os.makedirs(out_dir, exist_ok=True)
+    except OSError:
+        out_dir = exports_fallback(agent)
+    # Filename: just the bottom-three path components (agent is implied by
+    # the containing folder). Same project -> same file (latest wins).
+    fname = path_tail(cwd) + ".txt"
+    out_path = os.path.join(out_dir, fname)
+    text = render(agent, cwd, sid, start, msgs)
+    try:
+        with open(out_path, "w", encoding="utf-8") as fh:
+            fh.write(text)
+    except OSError as e2:
+        out_dir = exports_fallback(agent)
+        out_path = os.path.join(out_dir, fname)
+        try:
+            with open(out_path, "w", encoding="utf-8") as fh:
+                fh.write(text)
+        except OSError as e3:
+            log(f"[write-error] {out_path}: {e3}")
+            return False
+
+    state[key] = {"mtime": mtime, "size": size, "out": out_path}
+    log(f"[write] {agent} -> {out_path} ({len(msgs)} msgs)")
+    return True
+
+
 def process_file(watch, path, state):
     try:
         st = os.stat(path)
     except OSError:
         return
     key = os.path.abspath(path)
-    prev = state.get(key)
-    if prev and prev.get("mtime") == st.st_mtime and prev.get("size") == st.st_size:
-        return  # unchanged
-
     try:
         cwd, sid, start, msgs = watch["parser"](path)
     except Exception as e:
         log(f"[parse-error] {path}: {e}")
         state[key] = {"mtime": st.st_mtime, "size": st.st_size, "out": None}
         return
+    write_export(watch["agent"], cwd, sid, start, msgs,
+                 key, st.st_mtime, st.st_size, state)
 
-    if not msgs:
-        state[key] = {"mtime": st.st_mtime, "size": st.st_size, "out": None}
+
+def _opencode_db_path():
+    for p in (os.path.expanduser("~/.local/share/opencode/opencode.db"),
+              os.path.expanduser("~/.config/opencode/opencode.db")):
+        if os.path.exists(p):
+            return p
+    return None
+
+
+def ingest_opencode_db(watch, state):
+    """opencode (newer versions) stores sessions in a SQLite database rather
+    than JSONL. Each `session` has a `directory` (the project cwd); its
+    messages live in `message` and the actual text in `part` rows. We keep
+    `text` parts (user/assistant content) and drop `reasoning` / `tool` /
+    `step-*` parts, matching the other parsers."""
+    dbp = _opencode_db_path()
+    if not dbp:
         return
-
     agent = watch["agent"]
-    out_dir = os.path.join(OUTPUT_ROOT, agent)
     try:
-        os.makedirs(out_dir, exist_ok=True)
-    except OSError:
-        out_dir = exports_fallback(agent)
-    sid8 = (sid or "nosid")[:8]
-    # Filename: just the bottom-three path components (agent is implied by
-    # the containing folder). Same project -> same file (latest wins).
-    fname = path_tail(cwd) + ".txt"
-    out_path = os.path.join(out_dir, fname)
+        con = sqlite3.connect(f"file:{dbp}?mode=ro", uri=True)
+    except Exception as e:
+        log(f"[opencode-db] cannot open {dbp}: {e}")
+        return
     try:
-        with open(out_path, "w", encoding="utf-8") as fh:
-            fh.write(render(agent, cwd, sid, start, msgs))
-    except OSError as e2:
-        out_dir = exports_fallback(agent)
-        out_path = os.path.join(out_dir, fname)
-        try:
-            with open(out_path, "w", encoding="utf-8") as fh:
-                fh.write(render(agent, cwd, sid, start, msgs))
-        except OSError as e3:
-            log(f"[write-error] {out_path}: {e3}")
-            return
-
-    state[key] = {"mtime": st.st_mtime, "size": st.st_size, "out": out_path}
-    log(f"[write] {agent} -> {out_path} ({len(msgs)} msgs)")
+        cur = con.cursor()
+        # Newest session per project wins (scanned last -> overwrites file).
+        cur.execute("SELECT id, directory, time_created, time_updated "
+                    "FROM session ORDER BY time_updated DESC")
+        for sid, directory, tcreate, tupdate in cur.fetchall():
+            cwd = directory
+            if not cwd:
+                continue
+            msgs = []
+            cur2 = con.cursor()
+            cur2.execute("SELECT id, data, time_created FROM message "
+                         "WHERE session_id=? ORDER BY time_created ASC", (sid,))
+            for mid, mdata, mtc in cur2.fetchall():
+                try:
+                    m = json.loads(mdata)
+                except Exception:
+                    continue
+                role = m.get("role")
+                if role not in ("user", "assistant"):
+                    continue
+                cur3 = con.cursor()
+                cur3.execute("SELECT data FROM part WHERE message_id=? "
+                             "ORDER BY time_created ASC", (mid,))
+                chunks = []
+                for (pdata,) in cur3.fetchall():
+                    try:
+                        p = json.loads(pdata)
+                    except Exception:
+                        continue
+                    if p.get("type") == "text":
+                        t = p.get("text")
+                        if t:
+                            chunks.append(t)
+                text = "\n".join(chunks).strip()
+                if not text:
+                    continue
+                ts = (m.get("time") or {}).get("created") or mtc
+                msgs.append((parse_ts(ts), role, text))
+            key = f"opencode-db:{sid}"
+            mtime = (tupdate or tcreate or 0) / 1000.0
+            write_export(agent, cwd, sid, parse_ts(tcreate), msgs,
+                         key, mtime, len(msgs), state)
+    finally:
+        con.close()
 
 
 def scan_once(state):
     for watch in AGENTS:
+        if watch.get("source") == "opencode_db":
+            try:
+                ingest_opencode_db(watch, state)
+            except Exception as e:
+                log(f"[opencode-db error] {e}")
         for pattern in watch["globs"]:
             for path in glob.glob(pattern, recursive=True):
                 parts = path.replace("\\", "/").split("/")

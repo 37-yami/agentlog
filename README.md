@@ -172,6 +172,12 @@ Each entry:
 (the last is a best-effort fallback for any `message/role/content` JSONL, e.g.
 future agents like codex or mimo).
 
+> **opencode note**: recent opencode versions store sessions in a SQLite
+> database (default `~/.local/share/opencode/opencode.db`) instead of JSONL.
+> `agentlog` reads that database directly — no configuration needed. Only
+> `text` parts (user / assistant answers) are kept; `reasoning` (thinking) and
+> `tool` (tool calls) parts are dropped.
+
 ## How thinking is dropped
 
 Each parser keeps only `user`/`assistant` messages. It additionally:
@@ -189,7 +195,7 @@ Each parser keeps only `user`/`assistant` messages. It additionally:
 - `agentlog_gui.py` — optional GUI (window + system tray), reusing the above logic.
 - `agentlog.ico` — icon file (tray / window title bar / shortcut).
 - `agents.example.json` — optional config template.
-- `agent_logs/` — generated exports (git-ignored; safe to delete).
+- `agent_logs/` — generated exports 
 
 ## License
 

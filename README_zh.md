@@ -144,6 +144,11 @@ cp agents.example.json agents.json   # 可选;按需编辑
 
 `parser` 可以是 `codebuddy`、`pi`、`claude`、`opencode` 或 `generic`(最后一个是通用兜底解析器,适用于任何 `message/role/content` 结构的 JSONL,方便以后接入 codex、mimo 等新 agent)。
 
+> **opencode 说明**:新版本 opencode 把会话存进 SQLite 数据库(默认在
+> `~/.local/share/opencode/opencode.db`),而不是 JSONL 文件。`agentlog` 会直接
+> 读取这个数据库来抓取对话,无需任何额外配置。抓取时只保留 `text` 类型的内容
+> (user / assistant 的回答),自动丢弃 `reasoning`(思考)与 `tool`(工具调用)部分。
+
 ## 如何丢弃思考内容
 
 每个解析器只保留 `user`/`assistant` 消息,此外还会:
@@ -159,7 +164,7 @@ cp agents.example.json agents.json   # 可选;按需编辑
 - `agentlog_gui.py` — 可选的图形界面(窗口 + 系统托盘,复用上面的逻辑)。
 - `agentlog.ico` — 图标文件(托盘 / 窗口标题栏 / 快捷方式使用)。
 - `agents.example.json` — 可选配置模板。
-- `agent_logs/` — 生成的导出文件(已被 git 忽略,可安全删除)。
+- `agent_logs/` — 生成的导出文件
 
 ## 许可证
 

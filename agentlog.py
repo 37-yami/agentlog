@@ -29,11 +29,6 @@ import subprocess
 import ctypes.wintypes as wt
 from datetime import datetime, timezone, timedelta
 
-try:
-    import msvcrt  # exclusive-lock guard against double daemon (Windows)
-except ImportError:  # pragma: no cover
-    msvcrt = None
-
 # --------------------------------------------------------------------------
 # Config
 # --------------------------------------------------------------------------
@@ -50,8 +45,6 @@ IGNORE_DIR_PARTS = {"subagents"}
 STATE_FILE = os.path.join(HERE, "agentlog.state.json")
 LOG_FILE = os.path.join(HERE, "agentlog.log")
 PID_FILE = os.path.join(HERE, "agentlog.pid")
-# Separate lock file so the pid file stays readable by status/stop.
-LOCK_FILE = os.path.join(HERE, "agentlog.lock")
 
 BJ = timedelta(hours=8)  # Beijing time is fixed UTC+8
 
@@ -611,30 +604,33 @@ def write_pid(pid):
         pass
 
 
-_run_lock_fd = None
+_inst_handle = None  # named-mutex handle, kept open for the process lifetime
 
 
 def _acquire_run_lock():
-    """Exclusive lock so two daemons never run at once (e.g. both the
-    Startup shortcut and the Run key fire at logon). Lock file is separate
-    from the pid file so status/stop can still read the pid."""
-    global _run_lock_fd
-    if msvcrt is None:
-        return True
+    """Guarantee a single daemon via a named mutex (Windows). Returns True if
+    we own the instance, False if another agentlog daemon is already running.
+
+    This is a hard guarantee independent of the pid file, so concurrent
+    launches (e.g. the Startup shortcut firing while `start` runs) can never
+    spin up two daemons, and stale pid files can't cause duplicates either."""
+    global _inst_handle
     try:
-        fd = os.open(LOCK_FILE, os.O_CREAT | os.O_RDWR)
-    except OSError:
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.CreateMutexW.argtypes = [ctypes.c_void_p, ctypes.c_bool,
+                                          ctypes.c_wchar_p]
+        kernel32.CreateMutexW.restype = ctypes.c_void_p
+        mutex = kernel32.CreateMutexW(None, False,
+                                      "Local\\agentlog.single.instance")
+        if not mutex:
+            return True  # cannot lock -> allow (best effort)
+        if ctypes.get_last_error() == 183:  # ERROR_ALREADY_EXISTS
+            kernel32.CloseHandle(mutex)
+            return False
+        _inst_handle = mutex  # released automatically when the process exits
         return True
-    try:
-        if os.fstat(fd).st_size == 0:  # locking needs at least one byte
-            os.write(fd, b" ")
-            os.lseek(fd, 0, os.SEEK_SET)
-        msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
-        _run_lock_fd = fd  # held until process exit
+    except Exception:
         return True
-    except OSError:
-        os.close(fd)
-        return False
 
 
 def read_pid():
@@ -655,11 +651,74 @@ def is_running(pid):
         return False
 
 
+def _find_agentlog_pids():
+    """Return pids of python/pythonw processes whose command line contains
+    'agentlog.py'. Uses PowerShell (reliable on Windows) and falls back to the
+    pid-file pid when PowerShell is unavailable."""
+    pids = []
+    try:
+        rc, out, _ = run_cmd([
+            "powershell", "-NoProfile", "-NonInteractive", "-Command",
+            "Get-CimInstance Win32_Process -Filter \"name='pythonw.exe' or "
+            "name='python.exe'\" | Where-Object { $_.CommandLine -like "
+            "'*agentlog.py*' } | ForEach-Object { $_.ProcessId }"
+        ])
+        if rc == 0:
+            for tok in out.split():
+                tok = tok.strip()
+                if tok.isdigit():
+                    pids.append(int(tok))
+    except Exception:
+        pass
+    if not pids:
+        pid = read_pid()
+        if pid and is_running(pid):
+            pids.append(pid)
+    return pids
+
+
+def _kill_all_agentlog():
+    """Kill every python/pythonw process whose command line runs agentlog.py
+    (handles strays / duplicates). Falls back to the pid-file pid."""
+    pids = []
+    for pid in _find_agentlog_pids():
+        subprocess.run(["taskkill", "/PID", str(pid), "/F"], capture_output=True)
+        pids.append(str(pid))
+    if not pids:
+        pid = read_pid()
+        if pid and is_running(pid):
+            subprocess.run(["taskkill", "/PID", str(pid), "/F"], capture_output=True)
+            pids.append(str(pid))
+    return pids
+
+
 def cmd_start():
     pid = read_pid()
     if is_running(pid):
-        print(f"agentlog already running (pid {pid}).")
-        return
+        print(f"agentlog is already running (pid {pid}).")
+        if sys.stdin.isatty():
+            try:
+                while True:
+                    r = input(
+                        "A daemon is already running. "
+                        "Restart it (kill the old process and start a fresh one) "
+                        "[r], or cancel this run [c]? "
+                    ).strip().lower()
+                    if r in ("r", "restart"):
+                        _kill_all_agentlog()
+                        time.sleep(1)
+                        break
+                    if r in ("c", "cancel"):
+                        print("cancelled; the existing daemon keeps running.")
+                        return
+                    print("Please enter 'r' to restart or 'c' to cancel.")
+            except (EOFError, KeyboardInterrupt):
+                print("\ncancelled; the existing daemon keeps running.")
+                return
+        else:
+            print("Non-interactive shell: leaving the existing daemon running. "
+                  "Re-run in a terminal to restart, or use `stop` then `start`.")
+            return
     exe = pythonw_exe()
     script = os.path.abspath(__file__)
     log("launching background daemon")
@@ -672,16 +731,11 @@ def cmd_start():
 
 
 def cmd_stop():
-    pid = read_pid()
-    if pid and is_running(pid):
-        subprocess.run(["taskkill", "/PID", str(pid), "/F"],
-                       capture_output=True)
-        print(f"stopped pid {pid}.")
+    pids = _kill_all_agentlog()
+    if pids:
+        print(f"stopped pid(s): {', '.join(pids)}.")
     else:
-        # try to find by task name
-        subprocess.run(["taskkill", "/IM", "pythonw.exe", "/F"],
-                       capture_output=True)
-        print("no pidfile pid; attempted taskkill pythonw.")
+        print("no agentlog daemon process found.")
     try:
         os.remove(PID_FILE)
     except OSError:

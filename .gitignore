@@ -5,7 +5,6 @@ agent_logs/
 *.log
 *.state.json
 agentlog.pid
-agentlog.lock
 
 # Python
 __pycache__/

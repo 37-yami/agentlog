@@ -87,6 +87,16 @@ That is it. The daemon polls every 5 seconds; idle CPU is ~0.
 | `python agentlog.py install` | Enable logon auto-start (Startup shortcut) + start now |
 | `python agentlog.py uninstall` | Stop + remove the Startup shortcut |
 
+## Single instance
+
+`agentlog` guarantees exactly one daemon at a time. If one is already running
+when you run `start` or `install`, you are prompted to either **restart** it
+(kill the old process and start a fresh one) or **cancel** this run. The
+interactive prompt is skipped in non-interactive shells (the existing daemon is
+left running). Under the hood a Windows named mutex prevents two daemons from
+ever running at once, so even concurrent triggers (e.g. the Startup shortcut
+and a manual `start`) cannot spin up duplicates.
+
 ## Adding / tweaking agents
 
 No code edit needed. Copy the example and adjust globs or the parser:

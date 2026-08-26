@@ -77,6 +77,14 @@ python agentlog.py install
 | `python agentlog.py install` | 启用开机自启(启动文件夹快捷方式)+ 立即启动 |
 | `python agentlog.py uninstall` | 停止并移除启动快捷方式 |
 
+## 单实例运行
+
+`agentlog` 保证同一时刻只有一个守护进程。运行 `start` 或 `install` 时若发现
+已在运行,会提示你选择:**重开**(结束旧进程并启动新的)还是**取消**本次运行。
+在非交互式环境(如管道 / 无终端)下会跳过提示并保留现有进程。底层使用 Windows
+命名互斥体(named mutex)做硬保证,因此即使并发触发(比如登录启动项与手动
+`start` 同时发生)也绝不会出现两个 daemon。
+
 ## 添加 / 调整 agent
 
 不需要改代码。复制示例并按需修改 glob 或 parser:

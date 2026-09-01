@@ -49,6 +49,12 @@ IGNORE_DIR_PARTS = {"subagents"}
 STATE_FILE = os.path.join(HERE, "agentlog.state.json")
 LOG_FILE = os.path.join(HERE, "agentlog.log")
 PID_FILE = os.path.join(HERE, "agentlog.pid")
+# Output formats: list of formats to generate (e.g. ["txt", "md", "json"])
+OUTPUT_FORMATS = ["txt"]
+# Include thinking/reasoning content in output (default: False)
+INCLUDE_THINKING = False
+# Subfolder for files with thinking content
+THINKING_DIR = "_thinking"
 
 BJ = timedelta(hours=8)  # Beijing time is fixed UTC+8
 
@@ -118,13 +124,23 @@ def path_tail(cwd, n=3):
 # --------------------------------------------------------------------------
 # Content extraction
 # --------------------------------------------------------------------------
-def extract_text(content):
+def extract_text(content, include_thinking=False):
+    """Extract text from content, optionally including thinking/reasoning content.
+    
+    Args:
+        content: The content to extract text from
+        include_thinking: If True, include thinking/reasoning content in output
+    
+    Returns:
+        Tuple of (text, thinking) where thinking is content from THINK_TYPES
+    """
     if content is None:
-        return ""
+        return "", ""
     if isinstance(content, str):
-        return content.strip()
+        return content.strip(), ""
     if isinstance(content, list):
         parts = []
+        thinking_parts = []
         for b in content:
             if isinstance(b, str):
                 parts.append(b)
@@ -136,11 +152,16 @@ def extract_text(content):
                 continue
             txt = b.get("text") or b.get("content") or ""
             if isinstance(txt, list):  # nested
-                txt = extract_text(txt)
+                txt, _ = extract_text(txt, include_thinking)
             if txt:
-                parts.append(str(txt).strip())
-        return "\n".join(p for p in parts if p).strip()
-    return ""
+                if bt in THINK_TYPES:
+                    thinking_parts.append(str(txt).strip())
+                else:
+                    parts.append(str(txt).strip())
+        text = "\n".join(p for p in parts if p).strip()
+        thinking = "\n".join(p for p in thinking_parts if p).strip()
+        return text, thinking
+    return "", ""
 
 
 def looks_internal(path):
@@ -202,7 +223,7 @@ def parse_codebuddy(path):
     raw_cwd = None
     sid = None
     start = None
-    raw = []  # (kind, text, dt)  kind in {user, assistant, tool}
+    raw = []  # (kind, text, thinking, dt)  kind in {user, assistant, tool}
     with open(path, encoding="utf-8", errors="replace") as fh:
         for line in fh:
             line = line.strip()
@@ -218,10 +239,12 @@ def parse_codebuddy(path):
             if t == "message":
                 role = o.get("role")
                 if role == "user":
-                    raw.append(("user", extract_text(o.get("content")),
+                    text, thinking = extract_text(o.get("content"))
+                    raw.append(("user", text, thinking,
                                 parse_ts(o.get("timestamp"))))
                 elif role == "assistant":
-                    raw.append(("assistant", extract_text(o.get("content")),
+                    text, thinking = extract_text(o.get("content"))
+                    raw.append(("assistant", text, thinking,
                                 parse_ts(o.get("timestamp"))))
                 else:
                     continue
@@ -230,23 +253,23 @@ def parse_codebuddy(path):
                 start = start or parse_ts(o.get("timestamp"))
             elif t in ("function_call", "function_call_result",
                        "tool_use", "tool_result"):
-                raw.append(("tool", "", None))
+                raw.append(("tool", "", "", None))
             else:
                 # ai-title, file-history-snapshot, etc.
                 start = start or parse_ts(o.get("timestamp"))
                 raw_cwd = raw_cwd or o.get("cwd")
     msgs = []
     n = len(raw)
-    for i, (kind, text, dt) in enumerate(raw):
+    for i, (kind, text, thinking, dt) in enumerate(raw):
         if kind == "tool":
             continue
         if kind == "assistant" and DROP_PRE_TOOL_ASSISTANT:
             nxt = raw[i + 1][0] if i + 1 < n else None
             if nxt == "tool":          # planning aloud before acting -> drop
                 continue
-        if not text:
+        if not text and not thinking:
             continue
-        msgs.append((dt, kind, text))
+        msgs.append((dt, kind, text, thinking))
     return resolve_cwd(raw_cwd, folder), sid, start, msgs
 
 
@@ -280,10 +303,10 @@ def parse_pi(path):
                 # actual conversation (user questions + assistant answers).
                 if role not in ("user", "assistant"):
                     continue
-                text = extract_text(m.get("content"))
-                if not text:
+                text, thinking = extract_text(m.get("content"))
+                if not text and not thinking:
                     continue
-                msgs.append((parse_ts(o.get("timestamp")), role, text))
+                msgs.append((parse_ts(o.get("timestamp")), role, text, thinking))
     return resolve_cwd(raw_cwd, folder), sid, start, msgs
 
 
@@ -313,10 +336,10 @@ def parse_claude(path):
             role = msg.get("role") or o.get("role")
             if role not in ("user", "assistant"):
                 continue
-            text = extract_text(msg.get("content"))
-            if not text:
+            text, thinking = extract_text(msg.get("content"))
+            if not text and not thinking:
                 continue
-            msgs.append((parse_ts(o.get("timestamp")), role, text))
+            msgs.append((parse_ts(o.get("timestamp")), role, text, thinking))
     return resolve_cwd(raw_cwd, folder), sid, start, msgs
 
 
@@ -348,10 +371,10 @@ def parse_opencode(path):
             if role in ("thinking", "reasoning", "system"):
                 continue
             if role in ("user", "assistant"):
-                text = extract_text(msg.get("content") if msg else o.get("content"))
-                if not text:
+                text, thinking = extract_text(msg.get("content") if msg else o.get("content"))
+                if not text and not thinking:
                     continue
-                msgs.append((parse_ts(o.get("timestamp")), role, text))
+                msgs.append((parse_ts(o.get("timestamp")), role, text, thinking))
     return resolve_cwd(raw_cwd, folder), sid, start, msgs
 
 
@@ -382,10 +405,10 @@ def parse_generic(path):
             if role in ("thinking", "reasoning", "system", "tool", "toolResult", "function"):
                 continue
             if role in ("user", "assistant"):
-                text = extract_text(msg.get("content") if msg is not o else o.get("content"))
-                if not text:
+                text, thinking = extract_text(msg.get("content") if msg is not o else o.get("content"))
+                if not text and not thinking:
                     continue
-                msgs.append((parse_ts(o.get("timestamp") or msg.get("timestamp")), role, text))
+                msgs.append((parse_ts(o.get("timestamp") or msg.get("timestamp")), role, text, thinking))
     return resolve_cwd(raw_cwd, folder), sid, start, msgs
 
 
@@ -448,7 +471,30 @@ AGENTS = load_agents()
 # --------------------------------------------------------------------------
 # Rendering
 # --------------------------------------------------------------------------
-def render(agent, cwd, sid, start, msgs):
+def render(agent, cwd, sid, start, msgs, include_thinking=False, output_format="txt"):
+    """Render messages to text format.
+    
+    Args:
+        agent: Agent name
+        cwd: Working directory
+        sid: Session ID
+        start: Start time
+        msgs: List of (dt, role, text, thinking) tuples
+        include_thinking: If True, include thinking content
+        output_format: "txt", "md", or "json"
+    
+    Returns:
+        Formatted string
+    """
+    if output_format == "md":
+        return render_markdown(agent, cwd, sid, start, msgs, include_thinking)
+    if output_format == "json":
+        return render_json(agent, cwd, sid, start, msgs, include_thinking)
+    return render_txt(agent, cwd, sid, start, msgs, include_thinking)
+
+
+def render_txt(agent, cwd, sid, start, msgs, include_thinking=False):
+    """Render messages in plain text format."""
     out = []
     out.append(f"# Agent: {agent}")
     out.append(f"# Path: {cwd or '(unknown)'}")
@@ -459,12 +505,83 @@ def render(agent, cwd, sid, start, msgs):
     out.append("")
     role_label = {"user": "User", "assistant": "Assistant",
                   "system": "System", "tool": "Tool"}
-    for dt, role, text in msgs:
+    for dt, role, text, thinking in msgs:
         label = role_label.get(role, role.capitalize() if role else "?")
         out.append(f"[{fmt(dt)}] {label}:")
-        out.append(text)
+        if include_thinking and thinking:
+            out.append(f"  [Thinking]:")
+            for line in thinking.split("\n"):
+                out.append(f"    {line}")
+        if text:
+            out.append(text)
         out.append("")
     return "\n".join(out) + "\n"
+
+
+def render_markdown(agent, cwd, sid, start, msgs, include_thinking=False):
+    """Render messages in Markdown format."""
+    out = []
+    out.append(f"# Agent Conversation Log")
+    out.append("")
+    out.append(f"- **Agent:** {agent}")
+    out.append(f"- **Path:** `{cwd or '(unknown)'}`")
+    if sid:
+        out.append(f"- **Session:** `{sid}`")
+    out.append(f"- **Start (Beijing):** {fmt(start)}")
+    out.append(f"- **Messages:** {len(msgs)}")
+    out.append("")
+    out.append("---")
+    out.append("")
+    
+    role_label = {"user": "User", "assistant": "Assistant",
+                  "system": "System", "tool": "Tool"}
+    
+    for dt, role, text, thinking in msgs:
+        label = role_label.get(role, role.capitalize() if role else "?")
+        out.append(f"## [{fmt(dt)}] {label}")
+        out.append("")
+        
+        # Include thinking content if enabled
+        if include_thinking and thinking:
+            out.append("### Thinking")
+            out.append("")
+            out.append("```")
+            out.append(thinking)
+            out.append("```")
+            out.append("")
+        
+        # Include main text
+        if text:
+            out.append("### Response")
+            out.append("")
+            out.append(text)
+            out.append("")
+        
+        out.append("---")
+        out.append("")
+    
+    return "\n".join(out) + "\n"
+
+
+def render_json(agent, cwd, sid, start, msgs, include_thinking=False):
+    """Render messages in JSON format."""
+    data = {
+        "agent": agent,
+        "path": cwd or "(unknown)",
+        "session": sid,
+        "start_beijing": fmt(start),
+        "messages": []
+    }
+    for dt, role, text, thinking in msgs:
+        msg = {
+            "time": fmt(dt),
+            "role": role,
+            "text": text
+        }
+        if include_thinking and thinking:
+            msg["thinking"] = thinking
+        data["messages"].append(msg)
+    return json.dumps(data, ensure_ascii=False, indent=2) + "\n"
 
 
 def exports_fallback(agent):
@@ -473,9 +590,13 @@ def exports_fallback(agent):
     return d
 
 
-def write_export(agent, cwd, sid, start, msgs, key, mtime, size, state):
+def write_export(agent, cwd, sid, start, msgs, key, mtime, size, state,
+                 include_thinking=False, output_formats=None):
     """Dedupe + render + write one conversation export. Shared by the file
     parser and the opencode SQLite ingestion."""
+    if output_formats is None:
+        output_formats = OUTPUT_FORMATS
+
     prev = state.get(key)
     if prev and prev.get("mtime") == mtime and prev.get("size") == size:
         return False  # unchanged
@@ -484,32 +605,50 @@ def write_export(agent, cwd, sid, start, msgs, key, mtime, size, state):
         state[key] = {"mtime": mtime, "size": size, "out": None}
         return False
 
-    out_dir = os.path.join(OUTPUT_ROOT, agent)
+    # Determine output directory: thinking files go in subfolder
+    if include_thinking:
+        out_dir = os.path.join(OUTPUT_ROOT, agent, THINKING_DIR)
+    else:
+        out_dir = os.path.join(OUTPUT_ROOT, agent)
     try:
         os.makedirs(out_dir, exist_ok=True)
     except OSError:
         out_dir = exports_fallback(agent)
-    # Filename: just the bottom-three path components (agent is implied by
-    # the containing folder). Same project -> same file (latest wins).
-    fname = path_tail(cwd) + ".txt"
-    out_path = os.path.join(out_dir, fname)
-    text = render(agent, cwd, sid, start, msgs)
-    try:
-        with open(out_path, "w", encoding="utf-8") as fh:
-            fh.write(text)
-    except OSError as e2:
-        out_dir = exports_fallback(agent)
+
+    # Generate files for each format
+    ext_map = {"txt": ".txt", "md": ".md", "json": ".json"}
+    base_name = path_tail(cwd)
+    written_paths = []
+
+    for fmt_key in output_formats:
+        ext = ext_map.get(fmt_key, ".txt")
+        fname = base_name + ext
         out_path = os.path.join(out_dir, fname)
+        text = render(agent, cwd, sid, start, msgs, include_thinking, fmt_key)
         try:
             with open(out_path, "w", encoding="utf-8") as fh:
                 fh.write(text)
-        except OSError as e3:
-            log(f"[write-error] {out_path}: {e3}")
-            return False
+            written_paths.append(out_path)
+        except OSError:
+            # Fallback directory
+            fallback_dir = exports_fallback(agent)
+            if include_thinking:
+                fallback_dir = os.path.join(fallback_dir, THINKING_DIR)
+                os.makedirs(fallback_dir, exist_ok=True)
+            out_path = os.path.join(fallback_dir, fname)
+            try:
+                with open(out_path, "w", encoding="utf-8") as fh:
+                    fh.write(text)
+                written_paths.append(out_path)
+            except OSError as e3:
+                log(f"[write-error] {out_path}: {e3}")
 
-    state[key] = {"mtime": mtime, "size": size, "out": out_path}
-    log(f"[write] {agent} -> {out_path} ({len(msgs)} msgs)")
-    return True
+    if written_paths:
+        state[key] = {"mtime": mtime, "size": size, "out": written_paths[0]}
+        tag = "(thinking)" if include_thinking else ""
+        log(f"[write] {agent} {tag} -> {', '.join(os.path.basename(p) for p in written_paths)} ({len(msgs)} msgs)")
+        return True
+    return False
 
 
 def process_file(watch, path, state):
@@ -525,7 +664,8 @@ def process_file(watch, path, state):
         state[key] = {"mtime": st.st_mtime, "size": st.st_size, "out": None}
         return
     write_export(watch["agent"], cwd, sid, start, msgs,
-                 key, st.st_mtime, st.st_size, state)
+                 key, st.st_mtime, st.st_size, state,
+                 include_thinking=INCLUDE_THINKING, output_formats=OUTPUT_FORMATS)
 
 
 def _opencode_db_path():
@@ -589,11 +729,12 @@ def ingest_opencode_db(watch, state):
                 if not text:
                     continue
                 ts = (m.get("time") or {}).get("created") or mtc
-                msgs.append((parse_ts(ts), role, text))
+                msgs.append((parse_ts(ts), role, text, ""))
             key = f"opencode-db:{sid}"
             mtime = (tupdate or tcreate or 0) / 1000.0
             write_export(agent, cwd, sid, parse_ts(tcreate), msgs,
-                         key, mtime, len(msgs), state)
+                         key, mtime, len(msgs), state,
+                         include_thinking=INCLUDE_THINKING, output_formats=OUTPUT_FORMATS)
     finally:
         con.close()
 
@@ -1130,13 +1271,24 @@ def cmd_build_icon(src):
 
 def main():
     _detach_streams()
+    global INCLUDE_THINKING, OUTPUT_FORMATS
     ap = argparse.ArgumentParser(description="Capture CLI agent conversations.")
     ap.add_argument("action", nargs="?", default="once",
                     choices=["run", "once", "start", "stop",
                              "status", "install", "uninstall",
                              "gui-shortcut", "build-icon"])
     ap.add_argument("path", nargs="?", default="")
+    ap.add_argument("-t", "--include-thinking", action="store_true",
+                    help="Include thinking/reasoning content in output")
+    ap.add_argument("-f", "--format", nargs="+", choices=["txt", "md", "json"],
+                    default=["txt"],
+                    help="Output format(s): txt (default), md, json. "
+                         "Multiple formats can be specified.")
     args = ap.parse_args()
+    
+    # Update global config from CLI args
+    INCLUDE_THINKING = args.include_thinking
+    OUTPUT_FORMATS = args.format
 
     if args.action == "run":
         if not _acquire_run_lock():

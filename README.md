@@ -6,15 +6,16 @@ Capture CLI agent conversations into the project directory they ran in.
 
 When you run coding agents (CodeBuddy, pi, Claude Code, OpenCode, …) from many
 different working directories, it is easy to forget *where* a conversation
-happened. Also, many agents print their “thinking”/reasoning inline, which
+happened. Also, many agents print their "thinking"/reasoning inline, which
 clutters the scrollback and pollutes any transcript you keep.
 
-`agentlog` watches each agent’s own transcript files (JSONL) in the background
-and renders a clean **`.txt`** per conversation window, placed under the
-project folder it belongs to. It:
+`agentlog` watches each agent's own transcript files (JSONL) in the background
+and renders a clean file per conversation window, placed under the project
+folder it belongs to. It:
 
 - keeps **only the user/assistant conversation** (questions & answers),
-- **drops thinking/reasoning** and tool internals,
+- **optionally keeps thinking/reasoning** (dropped by default),
+- supports multiple output formats (**txt**, **Markdown**, **JSON**),
 - puts every message on **Beijing time** (`UTC+8`),
 - runs as a tiny **background daemon** (no console window) that starts at logon,
   so you never toggle it per session or per agent.
@@ -22,20 +23,39 @@ project folder it belongs to. It:
 ## Output layout
 
 ```
-agent_logs/<agent>/<bottom-3-path-components>.txt
+agent_logs/<agent>/<bottom-3-path-components>.<format>
 ```
 
 The filename is just the last three path components of the project directory
 (joined with `-`), because the agent is implied by the containing folder and
 you are unlikely to run two conversations in the same project at once.
-Example: a session run in `C:\path\to\your\project\v2` becomes
+
+Example: a session run in `/path/to/your/project/v2` becomes
 `claude/your-project-v2.txt`.
+
+### Output formats
+
+| Format | Extension | Description |
+|--------|-----------|-------------|
+| txt | `.txt` | Plain text, compact and simple |
+| Markdown | `.md` | Markdown format, well-structured for reading |
+| JSON | `.json` | JSON format, easy for programmatic processing |
+
+### Thinking content
+
+By default, thinking/reasoning content is not included. When enabled, files
+are saved to the `_thinking` subfolder:
+
+```
+agent_logs/<agent>/<file>.txt          # Without thinking
+agent_logs/<agent>/_thinking/<file>.txt # With thinking
+```
 
 Each file starts with metadata, then the conversation:
 
 ```
 # Agent: claude
-# Path: C:\path\to\your\project\v2
+# Path: /path/to/your/project/v2
 # Session: <session-id>
 # Start (Beijing): 2026-08-17 11:50:03
 # Messages: 12
@@ -89,6 +109,24 @@ That is it. The daemon polls every 5 seconds; idle CPU is ~0.
 | `python agentlog.py gui-shortcut` | Create a double-click GUI launcher (repo dir + Desktop) |
 | `python agentlog.py build-icon <img>` | Regenerate `agentlog.ico` (tray/window/shortcut) from an image |
 
+### CLI arguments
+
+```bash
+# Generate multiple formats at once
+python agentlog.py once -f txt md json
+
+# Include thinking content
+python agentlog.py once -t
+
+# Combine options
+python agentlog.py once -f txt md -t
+```
+
+| Argument | Description |
+|----------|-------------|
+| `-f, --format` | Output format(s), can be multiple: `txt` `md` `json` (default: txt) |
+| `-t, --include-thinking` | Include thinking/reasoning content (default: excluded) |
+
 ## GUI
 
 Prefer a window over the command line? There is a tiny, zero-dependency UI
@@ -98,21 +136,45 @@ Prefer a window over the command line? There is a tiny, zero-dependency UI
 python agentlog_gui.py
 ```
 
-The window offers:
+### Features
 
-- A **status** line (running / stopped and the pid), plus **Start / Stop /
+- **Status display** (running / stopped and pid), plus **Start / Stop /
   Restart / Scan now** buttons;
-- An **auto-start** toggle (maps to the `.lnk` in the Startup folder — check to
-  install, uncheck to uninstall);
-- A **list of exported files** (grouped by agent / project); double-click one to
-  open it in the default program;
+- **Auto-start toggle** (maps to the `.lnk` in the Startup folder);
+- **Format selection**: checkboxes for `txt`, `md`, `json` (can select multiple);
+- **Thinking toggle**: checkbox to include thinking content;
+- **Exported file list**: grouped by agent / project, supports multiple formats;
+- **Filters**:
+  - Agent filter: filter by agent name;
+  - Format filter: filter by file format (txt/md/json);
+  - Thinking filter: filter by presence of thinking content;
+  - Search: search by filename or agent name;
+- **Selection operations**:
+  - Select all checkbox: select all files in current filter;
+  - Deselect all button: clear selection;
+  - Delete selected button: delete selected files (with confirmation);
 - **Open export folder**, **Minimize to tray**, and **Quit** buttons.
 
-Closing the window (the × button) does **not** quit — it minimizes to the
-**system tray** (notification area) so the daemon's live status stays visible.
-**Right-click** the tray icon for a menu (Open window / Start / Stop / Open
-exports / Quit); a **left-click** restores the window. To fully exit, use
-"Quit" in the tray menu or the "Quit" button.
+### GUI layout
+
+```
+[Status: Running] [Start] [Stop] [Restart] [Scan Now]    [Auto-start]
+Output: ☑ txt  ☑ md  ☐ json    Include thinking ☐    [Refresh]
+Agent: [All ▼]  Format: [All ▼]  Thinking: [All ▼]  Search: [________] [Search]
+┌─────────────────────────────────────────────────────────┐
+│ Path (Project)        │ Agent    │ File                 │
+├─────────────────────────────────────────────────────────┤
+│ ...                                                     │
+└─────────────────────────────────────────────────────────┘
+☑ Select All  [Deselect All]  [Delete Selected]  Selected 3/12
+[Open Export Folder]  [Minimize to Tray]            [Quit]
+```
+
+### Single instance GUI
+
+The GUI ensures only one instance runs at a time. If an instance is already
+running (including minimized to tray), launching again will automatically
+restore the existing window.
 
 ### Double-click to run
 
@@ -134,7 +196,7 @@ To use your own image (e.g. an anime avatar), regenerate it with Pillow
 (only needed at build time — not at runtime):
 
 ```bash
-python agentlog.py build-icon D:/path/to/your-image.jpg
+python agentlog.py build-icon /path/to/your-image.jpg
 ```
 
 Then re-run `gui-shortcut` so the launcher picks up the new icon.
@@ -183,9 +245,9 @@ future agents like codex or mimo).
 Each parser keeps only `user`/`assistant` messages. It additionally:
 
 - skips `reasoning`/`thinking` events entirely,
-- skips `tool_use` / `tool_result` (and pi’s `toolResult`) blocks,
+- skips `tool_use` / `tool_result` (and pi's `toolResult`) blocks,
 - drops assistant text that is just narration immediately before a tool call
-  (the “thinking out loud” lines),
+  (the "thinking out loud" lines),
 - ignores `subagents/` directories (those are internal chatter, not standalone
   conversations).
 
@@ -195,7 +257,7 @@ Each parser keeps only `user`/`assistant` messages. It additionally:
 - `agentlog_gui.py` — optional GUI (window + system tray), reusing the above logic.
 - `agentlog.ico` — icon file (tray / window title bar / shortcut).
 - `agents.example.json` — optional config template.
-- `agent_logs/` — generated exports 
+- `agent_logs/` — generated exports
 
 ## License
 

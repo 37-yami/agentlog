@@ -253,6 +253,7 @@ class AgentLogGUI:
         root.protocol("WM_DELETE_WINDOW", self.on_close)
 
     def _build_widgets(self):
+        # Top control bar
         f = ttk.Frame(self.root, padding=10)
         f.pack(fill="x")
 
@@ -271,18 +272,106 @@ class AgentLogGUI:
                                         command=self.toggle_autostart)
         self.auto_chk.pack(side="right")
 
-        # exports tree
+        # Settings row 1: format checkboxes + thinking toggle
+        row1 = ttk.Frame(self.root, padding=(10, 2, 10, 0))
+        row1.pack(fill="x")
+
+        ttk.Label(row1, text="输出格式:").pack(side="left", padx=(0, 4))
+        self.fmt_txt_var = tk.BooleanVar(value=True)
+        self.fmt_md_var = tk.BooleanVar(value=False)
+        self.fmt_json_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(row1, text="txt", variable=self.fmt_txt_var,
+                        command=self._on_format_change).pack(side="left", padx=2)
+        ttk.Checkbutton(row1, text="md", variable=self.fmt_md_var,
+                        command=self._on_format_change).pack(side="left", padx=2)
+        ttk.Checkbutton(row1, text="json", variable=self.fmt_json_var,
+                        command=self._on_format_change).pack(side="left", padx=(2, 12))
+
+        self.thinking_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(row1, text="包含思考内容",
+                        variable=self.thinking_var,
+                        command=self._on_thinking_change).pack(side="left", padx=(0, 12))
+
+        ttk.Button(row1, text="刷新", command=self.refresh_exports).pack(
+            side="left", padx=3)
+
+        # Settings row 2: filters + search
+        row2 = ttk.Frame(self.root, padding=(10, 2, 10, 0))
+        row2.pack(fill="x")
+
+        # Agent filter
+        ttk.Label(row2, text="Agent:").pack(side="left", padx=(0, 4))
+        self.filter_var = tk.StringVar(value="全部")
+        self.filter_menu = ttk.Combobox(row2, textvariable=self.filter_var,
+                                        values=["全部"], width=12,
+                                        state="readonly")
+        self.filter_menu.pack(side="left", padx=(0, 10))
+        self.filter_menu.bind("<<ComboboxSelected>>", self._on_filter_change)
+
+        # Format filter
+        ttk.Label(row2, text="格式:").pack(side="left", padx=(0, 4))
+        self.ffilter_var = tk.StringVar(value="全部")
+        self.ffilter_menu = ttk.Combobox(row2, textvariable=self.ffilter_var,
+                                         values=["全部", "txt", "md", "json"],
+                                         width=8, state="readonly")
+        self.ffilter_menu.pack(side="left", padx=(0, 10))
+        self.ffilter_menu.bind("<<ComboboxSelected>>", self._on_filter_change)
+
+        # Thinking filter
+        ttk.Label(row2, text="思考:").pack(side="left", padx=(0, 4))
+        self.tfilter_var = tk.StringVar(value="全部")
+        self.tfilter_menu = ttk.Combobox(row2, textvariable=self.tfilter_var,
+                                         values=["全部", "无思考", "有思考"],
+                                         width=8, state="readonly")
+        self.tfilter_menu.pack(side="left", padx=(0, 10))
+        self.tfilter_menu.bind("<<ComboboxSelected>>", self._on_filter_change)
+
+        # Search
+        ttk.Label(row2, text="搜索:").pack(side="left", padx=(0, 4))
+        self.search_var = tk.StringVar(value="")
+        self.search_entry = ttk.Entry(row2, textvariable=self.search_var, width=15)
+        self.search_entry.pack(side="left", padx=(0, 4))
+        self.search_entry.bind("<Return>", lambda e: self.refresh_exports())
+        ttk.Button(row2, text="搜索", command=self.refresh_exports).pack(
+            side="left", padx=(0, 4))
+
+        # exports tree with scrollbar
+        tree_frame = ttk.Frame(self.root)
+        tree_frame.pack(fill="both", expand=True, padx=10, pady=(6, 0))
+
         cols = ("agent", "file")
-        self.tree = ttk.Treeview(self.root, columns=cols, show="tree headings",
-                                 padding=10)
+        self.tree = ttk.Treeview(tree_frame, columns=cols, show="tree headings",
+                                 padding=10, selectmode="extended")
         self.tree.heading("#0", text="路径 (项目)")
         self.tree.heading("agent", text="agent")
         self.tree.heading("file", text="文件")
         self.tree.column("#0", width=320)
         self.tree.column("agent", width=90)
         self.tree.column("file", width=240)
-        self.tree.pack(fill="both", expand=True, padx=10, pady=(6, 0))
+
+        scrollbar = ttk.Scrollbar(tree_frame, orient="vertical", command=self.tree.yview)
+        self.tree.configure(yscrollcommand=scrollbar.set)
+
+        self.tree.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+
         self.tree.bind("<Double-1>", self.open_selected)
+
+        # Selection buttons bar
+        sel_bar = ttk.Frame(self.root, padding=(10, 2, 10, 0))
+        sel_bar.pack(fill="x")
+        self.select_all_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(sel_bar, text="全选",
+                        variable=self.select_all_var,
+                        command=self._toggle_select_all).pack(side="left", padx=(0, 6))
+        ttk.Button(sel_bar, text="取消全选", command=self._deselect_all).pack(
+            side="left", padx=3)
+        ttk.Button(sel_bar, text="删除选中", command=self._delete_selected).pack(
+            side="left", padx=3)
+        self.sel_count_var = tk.StringVar(value="")
+        ttk.Label(sel_bar, textvariable=self.sel_count_var, foreground="#666").pack(
+            side="left", padx=10)
+        self.tree.bind("<<TreeviewSelect>>", self._on_select_change)
 
         bottom = ttk.Frame(self.root, padding=6)
         bottom.pack(fill="x", side="bottom")
@@ -327,8 +416,22 @@ class AgentLogGUI:
 
     def do_scan(self):
         try:
+            # Apply current settings before scanning
+            core.INCLUDE_THINKING = self.thinking_var.get()
+            # Build format list from checkboxes
+            formats = []
+            if self.fmt_txt_var.get():
+                formats.append("txt")
+            if self.fmt_md_var.get():
+                formats.append("md")
+            if self.fmt_json_var.get():
+                formats.append("json")
+            if not formats:
+                formats = ["txt"]  # default
+            core.OUTPUT_FORMATS = formats
             core.scan_once(core.load_state())
-            self.hint.set("已扫描一次。")
+            self.hint.set(f"已扫描 (格式: {','.join(formats)}, "
+                         f"思考: {'是' if core.INCLUDE_THINKING else '否'})。")
         except Exception as e:
             self.hint.set(f"扫描出错: {e}")
         self.refresh_exports()
@@ -348,22 +451,160 @@ class AgentLogGUI:
         except Exception:
             return False
 
+    # ---- settings callbacks ----
+    def _on_format_change(self):
+        formats = []
+        if self.fmt_txt_var.get():
+            formats.append("txt")
+        if self.fmt_md_var.get():
+            formats.append("md")
+        if self.fmt_json_var.get():
+            formats.append("json")
+        self.hint.set(f"输出格式: {','.join(formats) if formats else '无'}")
+
+    def _on_thinking_change(self):
+        val = "包含" if self.thinking_var.get() else "不包含"
+        self.hint.set(f"思考内容: {val}")
+
+    def _on_filter_change(self, event=None):
+        self.select_all_var.set(False)
+        self.refresh_exports()
+
+    # ---- selection ----
+    def _toggle_select_all(self):
+        if self.select_all_var.get():
+            children = self.tree.get_children()
+            self.tree.selection_set(children)
+        else:
+            self.tree.selection_remove(*self.tree.get_children())
+        self._update_sel_count()
+
+    def _deselect_all(self):
+        self.select_all_var.set(False)
+        self.tree.selection_remove(*self.tree.get_children())
+        self._update_sel_count()
+
+    def _on_select_change(self, event=None):
+        self._update_sel_count()
+
+    def _update_sel_count(self):
+        n = len(self.tree.selection())
+        total = len(self.tree.get_children())
+        if n == 0:
+            self.sel_count_var.set(f"共 {total} 项")
+        else:
+            self.sel_count_var.set(f"已选 {n}/{total} 项")
+
+    def _delete_selected(self):
+        selected = self.tree.selection()
+        if not selected:
+            self.hint.set("未选中任何文件。")
+            return
+        files = []
+        for item in selected:
+            full = self.tree.item(item, "tags")[0]
+            if full:
+                files.append(full)
+        if not files:
+            return
+        count = len(files)
+        if not messagebox.askyesno("确认删除",
+                                   f"确定要删除选中的 {count} 个文件吗？\n此操作不可撤销。"):
+            return
+        deleted = 0
+        for fp in files:
+            try:
+                os.remove(fp)
+                deleted += 1
+            except OSError as e:
+                self.hint.set(f"删除失败: {e}")
+        # Clean up empty _thinking folders
+        for agent_dir in os.listdir(OUTPUT_ROOT):
+            think_dir = os.path.join(OUTPUT_ROOT, agent_dir, core.THINKING_DIR)
+            if os.path.isdir(think_dir) and not os.listdir(think_dir):
+                try:
+                    os.rmdir(think_dir)
+                except OSError:
+                    pass
+        self.hint.set(f"已删除 {deleted} 个文件。")
+        self.refresh_exports()
+
     # ---- exports ----
     def refresh_exports(self):
         for item in self.tree.get_children():
             self.tree.delete(item)
         if not os.path.isdir(OUTPUT_ROOT):
             return
+
+        # Collect all agents and items
+        agents_set = set()
+        all_items = []
         for agent in sorted(os.listdir(OUTPUT_ROOT)):
             adir = os.path.join(OUTPUT_ROOT, agent)
             if not os.path.isdir(adir):
                 continue
+            agents_set.add(agent)
+
+            # Normal files (no thinking) - support txt, md, json
             for fn in sorted(os.listdir(adir)):
-                if not fn.endswith(".txt"):
+                if not fn.endswith((".txt", ".md", ".json")):
                     continue
                 full = os.path.join(adir, fn)
-                self.tree.insert("", "end", text=fn,
-                                 values=(agent, fn), tags=(full,))
+                if os.path.isfile(full):
+                    all_items.append((agent, fn, full, False))
+
+            # Thinking files (in _thinking subfolder)
+            think_dir = os.path.join(adir, core.THINKING_DIR)
+            if os.path.isdir(think_dir):
+                for fn in sorted(os.listdir(think_dir)):
+                    if not fn.endswith((".txt", ".md", ".json")):
+                        continue
+                    full = os.path.join(think_dir, fn)
+                    if os.path.isfile(full):
+                        all_items.append((agent, fn, full, True))
+
+        # Update agent filter dropdown
+        agent_list = ["全部"] + sorted(agents_set)
+        current_agent = self.filter_var.get()
+        self.filter_menu["values"] = agent_list
+        if current_agent not in agent_list:
+            self.filter_var.set("全部")
+
+        # Get filter values
+        sel_agent = self.filter_var.get()
+        sel_fmt = self.ffilter_var.get()
+        sel_think = self.tfilter_var.get()
+        search_key = self.search_var.get().strip().lower()
+
+        # Apply filters
+        for agent, fn, full, has_thinking in all_items:
+            # Agent filter
+            if sel_agent != "全部" and agent != sel_agent:
+                continue
+
+            # Format filter
+            if sel_fmt != "全部":
+                if not fn.endswith(f".{sel_fmt}"):
+                    continue
+
+            # Thinking filter
+            if sel_think == "无思考" and has_thinking:
+                continue
+            if sel_think == "有思考" and not has_thinking:
+                continue
+
+            # Search filter
+            if search_key:
+                if search_key not in fn.lower() and search_key not in agent.lower():
+                    continue
+
+            # Display name with thinking marker
+            display_fn = fn
+            if has_thinking:
+                display_fn = f"{fn} (有思考)"
+
+            self.tree.insert("", "end", text=display_fn,
+                             values=(agent, fn), tags=(full,))
 
     def open_selected(self, event):
         sel = self.tree.selection()
@@ -371,11 +612,12 @@ class AgentLogGUI:
             return
         item = sel[0]
         full = self.tree.item(item, "tags")[0]
-        if full and os.path.exists(full):
-            try:
-                os.startfile(full)
-            except Exception as e:
-                messagebox.showerror("打开失败", str(e))
+        if not full or not os.path.exists(full):
+            return
+        try:
+            os.startfile(full)
+        except Exception as e:
+            messagebox.showerror("打开失败", str(e))
 
     def open_dir(self):
         try:
@@ -423,10 +665,49 @@ class AgentLogGUI:
 
 def main():
     core._detach_streams()
+    
+    # Single instance check using named mutex (Windows) or PID file
+    if sys.platform == "win32":
+        try:
+            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            kernel32.CreateMutexW.argtypes = [ctypes.c_void_p, ctypes.c_bool,
+                                              ctypes.c_wchar_p]
+            kernel32.CreateMutexW.restype = ctypes.c_void_p
+            mutex = kernel32.CreateMutexW(None, False,
+                                          "Local\\agentlog.gui.single.instance")
+            if mutex and ctypes.get_last_error() == 183:  # ERROR_ALREADY_EXISTS
+                kernel32.CloseHandle(mutex)
+                # Try to find and activate existing window
+                user32 = ctypes.WinDLL("user32", use_last_error=True)
+                hwnd = user32.FindWindowW(None, "agentlog - 对话记录守护")
+                if hwnd:
+                    user32.ShowWindow(hwnd, 9)  # SW_RESTORE
+                    user32.SetForegroundWindow(hwnd)
+                sys.exit(0)
+            # Keep handle alive for process lifetime
+            globals()['_gui_mutex_handle'] = mutex
+        except Exception:
+            pass
+    else:
+        # Non-Windows: use a simple PID file check
+        gui_pid_file = os.path.join(core.HERE, "agentlog_gui.pid")
+        if os.path.exists(gui_pid_file):
+            try:
+                with open(gui_pid_file, encoding="utf-8") as f:
+                    old_pid = int(f.read().strip())
+                if core.is_running(old_pid):
+                    print("agentlog GUI is already running.")
+                    sys.exit(0)
+            except (OSError, ValueError):
+                pass
+        try:
+            with open(gui_pid_file, "w", encoding="utf-8") as f:
+                f.write(str(os.getpid()))
+        except OSError:
+            pass
+
     root = tk.Tk()
     app = AgentLogGUI(root)
-    # if launched and a tray is desired by default, start minimized? Keep window
-    # visible by default; user can minimize to tray.
     root.mainloop()
 
 

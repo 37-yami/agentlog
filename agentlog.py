@@ -148,14 +148,17 @@ def extract_text(content, include_thinking=False):
             if not isinstance(b, dict):
                 continue
             bt = (b.get("type") or "").lower()
-            if bt in SKIP_TYPES:
+            # Skip non-text block types (tool calls, etc.)
+            if bt in SKIP_TYPES and bt not in THINK_TYPES:
                 continue
             txt = b.get("text") or b.get("content") or ""
             if isinstance(txt, list):  # nested
                 txt, _ = extract_text(txt, include_thinking)
             if txt:
                 if bt in THINK_TYPES:
-                    thinking_parts.append(str(txt).strip())
+                    # Only include thinking if requested
+                    if include_thinking:
+                        thinking_parts.append(str(txt).strip())
                 else:
                     parts.append(str(txt).strip())
         text = "\n".join(p for p in parts if p).strip()
@@ -716,20 +719,30 @@ def ingest_opencode_db(watch, state):
                 cur3.execute("SELECT data FROM part WHERE message_id=? "
                              "ORDER BY time_created ASC", (mid,))
                 chunks = []
+                other_parts = []
                 for (pdata,) in cur3.fetchall():
                     try:
                         p = json.loads(pdata)
                     except Exception:
                         continue
-                    if p.get("type") == "text":
+                    ptype = p.get("type")
+                    if ptype == "text":
                         t = p.get("text")
                         if t:
                             chunks.append(t)
+                    else:
+                        # All non-text parts go to thinking (reasoning, tool, step-start, etc.)
+                        t = p.get("text") or p.get("reasoning") or p.get("tool") or ""
+                        if t:
+                            if isinstance(t, dict):
+                                t = json.dumps(t, ensure_ascii=False)
+                            other_parts.append(f"[{ptype}] {t}")
                 text = "\n".join(chunks).strip()
+                thinking = "\n".join(other_parts).strip()
                 if not text:
                     continue
                 ts = (m.get("time") or {}).get("created") or mtc
-                msgs.append((parse_ts(ts), role, text, ""))
+                msgs.append((parse_ts(ts), role, text, thinking))
             key = f"opencode-db:{sid}"
             mtime = (tupdate or tcreate or 0) / 1000.0
             write_export(agent, cwd, sid, parse_ts(tcreate), msgs,

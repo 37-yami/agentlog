@@ -339,15 +339,20 @@ class AgentLogGUI:
         tree_frame = ttk.Frame(self.root)
         tree_frame.pack(fill="both", expand=True, padx=10, pady=(6, 0))
 
-        cols = ("agent", "file")
+        cols = ("agent", "file", "mtime")
         self.tree = ttk.Treeview(tree_frame, columns=cols, show="tree headings",
                                  padding=10, selectmode="extended")
-        self.tree.heading("#0", text="路径 (项目)")
-        self.tree.heading("agent", text="agent")
-        self.tree.heading("file", text="文件")
-        self.tree.column("#0", width=320)
-        self.tree.column("agent", width=90)
-        self.tree.column("file", width=240)
+        self.tree.heading("#0", text="路径 (项目)", command=lambda: self._sort_tree("#0"))
+        self.tree.heading("agent", text="agent", command=lambda: self._sort_tree("agent"))
+        self.tree.heading("file", text="文件", command=lambda: self._sort_tree("file"))
+        self.tree.heading("mtime", text="更新时间 ↓", command=lambda: self._sort_tree("mtime"))
+        self.tree.column("#0", width=280)
+        self.tree.column("agent", width=80)
+        self.tree.column("file", width=200)
+        self.tree.column("mtime", width=140)
+
+        self._sort_col = "mtime"
+        self._sort_reverse = True  # descending by default (newest first)
 
         scrollbar = ttk.Scrollbar(tree_frame, orient="vertical", command=self.tree.yview)
         self.tree.configure(yscrollcommand=scrollbar.set)
@@ -417,7 +422,7 @@ class AgentLogGUI:
     def do_scan(self):
         try:
             # Apply current settings before scanning
-            core.INCLUDE_THINKING = self.thinking_var.get()
+            new_thinking = self.thinking_var.get()
             # Build format list from checkboxes
             formats = []
             if self.fmt_txt_var.get():
@@ -428,8 +433,23 @@ class AgentLogGUI:
                 formats.append("json")
             if not formats:
                 formats = ["txt"]  # default
+            
+            # Check if settings changed - if so, clear state to force regeneration
+            settings_changed = (new_thinking != core.INCLUDE_THINKING or 
+                               formats != core.OUTPUT_FORMATS)
+            
+            core.INCLUDE_THINKING = new_thinking
             core.OUTPUT_FORMATS = formats
-            core.scan_once(core.load_state())
+            
+            state = core.load_state()
+            if settings_changed:
+                # Clear output records to force regeneration
+                for key in list(state.keys()):
+                    if isinstance(state[key], dict) and "out" in state[key]:
+                        del state[key]["out"]
+            
+            core.scan_once(state)
+            core.save_state(state)
             self.hint.set(f"已扫描 (格式: {','.join(formats)}, "
                          f"思考: {'是' if core.INCLUDE_THINKING else '否'})。")
         except Exception as e:
@@ -469,6 +489,43 @@ class AgentLogGUI:
     def _on_filter_change(self, event=None):
         self.select_all_var.set(False)
         self.refresh_exports()
+
+    def _sort_tree(self, col):
+        """Sort treeview by column header click."""
+        if self._sort_col == col:
+            self._sort_reverse = not self._sort_reverse
+        else:
+            self._sort_col = col
+            self._sort_reverse = False
+        
+        # Update heading arrows
+        for c in ("#0", "agent", "file", "mtime"):
+            text = self.tree.heading(c)["text"].rstrip(" ↓↑")
+            if c == col:
+                text += " ↑" if not self._sort_reverse else " ↓"
+            self.tree.heading(c, text=text)
+        
+        # Get all items with their values
+        items = []
+        for item in self.tree.get_children():
+            tags = self.tree.item(item, "tags")
+            if col == "#0":
+                val = self.tree.item(item, "text")
+            elif col == "mtime":
+                # Parse time string for proper sorting
+                val = self.tree.item(item, "values")[2] if len(self.tree.item(item, "values")) > 2 else ""
+            else:
+                idx = {"agent": 0, "file": 1}.get(col, 0)
+                vals = self.tree.item(item, "values")
+                val = vals[idx] if idx < len(vals) else ""
+            items.append((val, item, tags))
+        
+        # Sort items
+        items.sort(key=lambda x: x[0], reverse=self._sort_reverse)
+        
+        # Reinsert in sorted order
+        for idx, (val, item, tags) in enumerate(items):
+            self.tree.move(item, "", idx)
 
     # ---- selection ----
     def _toggle_select_all(self):
@@ -551,7 +608,8 @@ class AgentLogGUI:
                     continue
                 full = os.path.join(adir, fn)
                 if os.path.isfile(full):
-                    all_items.append((agent, fn, full, False))
+                    mtime = os.path.getmtime(full)
+                    all_items.append((agent, fn, full, False, mtime))
 
             # Thinking files (in _thinking subfolder)
             think_dir = os.path.join(adir, core.THINKING_DIR)
@@ -561,7 +619,8 @@ class AgentLogGUI:
                         continue
                     full = os.path.join(think_dir, fn)
                     if os.path.isfile(full):
-                        all_items.append((agent, fn, full, True))
+                        mtime = os.path.getmtime(full)
+                        all_items.append((agent, fn, full, True, mtime))
 
         # Update agent filter dropdown
         agent_list = ["全部"] + sorted(agents_set)
@@ -577,7 +636,7 @@ class AgentLogGUI:
         search_key = self.search_var.get().strip().lower()
 
         # Apply filters
-        for agent, fn, full, has_thinking in all_items:
+        for agent, fn, full, has_thinking, mtime in all_items:
             # Agent filter
             if sel_agent != "全部" and agent != sel_agent:
                 continue
@@ -603,8 +662,12 @@ class AgentLogGUI:
             if has_thinking:
                 display_fn = f"{fn} (有思考)"
 
+            # Format mtime
+            from datetime import datetime
+            mtime_str = datetime.fromtimestamp(mtime).strftime("%Y-%m-%d %H:%M")
+
             self.tree.insert("", "end", text=display_fn,
-                             values=(agent, fn), tags=(full,))
+                             values=(agent, fn, mtime_str), tags=(full,))
 
     def open_selected(self, event):
         sel = self.tree.selection()

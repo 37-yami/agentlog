@@ -144,6 +144,8 @@ python agentlog_gui.py
 - **Format selection**: checkboxes for `txt`, `md`, `json` (can select multiple);
 - **Thinking toggle**: checkbox to include thinking content;
 - **Exported file list**: grouped by agent / project, supports multiple formats;
+- **File update time**: shows last modification time for each file;
+- **Column sorting**: click column headers to sort by path, agent, filename, or update time;
 - **Filters**:
   - Agent filter: filter by agent name;
   - Format filter: filter by file format (txt/md/json);
@@ -161,14 +163,16 @@ python agentlog_gui.py
 [Status: Running] [Start] [Stop] [Restart] [Scan Now]    [Auto-start]
 Output: ☑ txt  ☑ md  ☐ json    Include thinking ☐    [Refresh]
 Agent: [All ▼]  Format: [All ▼]  Thinking: [All ▼]  Search: [________] [Search]
-┌─────────────────────────────────────────────────────────┐
-│ Path (Project)        │ Agent    │ File                 │
-├─────────────────────────────────────────────────────────┤
-│ ...                                                     │
-└─────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────┐
+│ Path (Project)     │ Agent    │ File                 │ Updated ↓     │
+├──────────────────────────────────────────────────────────────────────┤
+│ ...                                                                 │
+└──────────────────────────────────────────────────────────────────────┘
 ☑ Select All  [Deselect All]  [Delete Selected]  Selected 3/12
 [Open Export Folder]  [Minimize to Tray]            [Quit]
 ```
+
+Click column headers to sort. Click again to toggle ascending/descending order.
 
 ### Single instance GUI
 

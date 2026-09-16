@@ -621,6 +621,12 @@ def write_export(agent, cwd, sid, start, msgs, key, mtime, size, state,
     # Generate files for each format
     ext_map = {"txt": ".txt", "md": ".md", "json": ".json"}
     base_name = path_tail(cwd)
+    # Add short session ID to filename for uniqueness (remove ses_ prefix)
+    if sid:
+        # Remove ses_ prefix if present
+        sid_clean = sid[4:] if sid.startswith("ses_") else sid
+        sid_short = sid_clean[:8] if len(sid_clean) > 8 else sid_clean
+        base_name = f"{base_name}-{sid_short}"
     written_paths = []
 
     for fmt_key in output_formats:

@@ -141,6 +141,10 @@ python agentlog_gui.py
 - **Status display** (running / stopped and pid), plus **Start / Stop /
   Restart / Scan now** buttons;
 - **Auto-start toggle** (maps to the `.lnk` in the Startup folder);
+- **Dual-tab interface**: File list + Session list;
+
+### File List Tab
+
 - **Format selection**: checkboxes for `txt`, `md`, `json` (can select multiple);
 - **Thinking toggle**: checkbox to include thinking content;
 - **Exported file list**: grouped by agent / project, supports multiple formats;
@@ -155,21 +159,35 @@ python agentlog_gui.py
   - Select all checkbox: select all files in current filter;
   - Deselect all button: clear selection;
   - Delete selected button: delete selected files (with confirmation);
-- **Open export folder**, **Minimize to tray**, and **Quit** buttons.
+
+### Session List Tab
+
+- **All agents support**: opencode (SQLite) + codebuddy/pi/claude (JSONL);
+- **Session info**: Agent, project path, Session ID, start time, last update, message count;
+- **Auto-filter**: hides empty sessions with 0 messages;
+- **Agent filter**: filter by agent name;
+- **Search**: search by project path, Session ID, or agent name;
+- **Column sorting**: click column headers to sort by any column;
+- **Double-click**: opens the exported file for that session;
 
 ### GUI layout
 
 ```
 [Status: Running] [Start] [Stop] [Restart] [Scan Now]    [Auto-start]
-Output: ☑ txt  ☑ md  ☐ json    Include thinking ☐    [Refresh]
-Agent: [All ▼]  Format: [All ▼]  Thinking: [All ▼]  Search: [________] [Search]
+
+[File List] [Session List]
 ┌──────────────────────────────────────────────────────────────────────┐
+│ Output: ☑ txt  ☑ md  ☐ json    Include thinking ☐    [Refresh]     │
+│ Agent: [All ▼]  Format: [All ▼]  Thinking: [All ▼]  Search: [__] [Search] │
+├──────────────────────────────────────────────────────────────────────┤
 │ Path (Project)     │ Agent    │ File                 │ Updated ↓     │
 ├──────────────────────────────────────────────────────────────────────┤
 │ ...                                                                 │
+├──────────────────────────────────────────────────────────────────────┤
+│ ☑ Select All  [Deselect All]  [Delete Selected]  Selected 3/12     │
+│                                              [Open Export Folder]   │
 └──────────────────────────────────────────────────────────────────────┘
-☑ Select All  [Deselect All]  [Delete Selected]  Selected 3/12
-[Open Export Folder]  [Minimize to Tray]            [Quit]
+                                [Minimize to Tray]                   [Quit]
 ```
 
 Click column headers to sort. Click again to toggle ascending/descending order.

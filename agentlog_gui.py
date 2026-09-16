@@ -272,89 +272,101 @@ class AgentLogGUI:
                                         command=self.toggle_autostart)
         self.auto_chk.pack(side="right")
 
-        # Settings row 1: format checkboxes + thinking toggle
-        row1 = ttk.Frame(self.root, padding=(10, 2, 10, 0))
-        row1.pack(fill="x")
+        # exports tree with scrollbar
+        tree_frame = ttk.Frame(self.root)
+        tree_frame.pack(fill="both", expand=True, padx=10, pady=(6, 0))
 
-        ttk.Label(row1, text="输出格式:").pack(side="left", padx=(0, 4))
+        # Notebook for switching between file view and session view
+        self.notebook = ttk.Notebook(tree_frame)
+        self.notebook.pack(fill="both", expand=True)
+
+        # Tab 1: File list view
+        file_tab = ttk.Frame(self.notebook)
+        self.notebook.add(file_tab, text="文件列表")
+
+        # File filter row 1: format checkboxes + thinking toggle
+        file_row1 = ttk.Frame(file_tab, padding=(10, 6, 10, 0))
+        file_row1.pack(fill="x")
+
+        ttk.Label(file_row1, text="输出格式:").pack(side="left", padx=(0, 4))
         self.fmt_txt_var = tk.BooleanVar(value=True)
         self.fmt_md_var = tk.BooleanVar(value=False)
         self.fmt_json_var = tk.BooleanVar(value=False)
-        ttk.Checkbutton(row1, text="txt", variable=self.fmt_txt_var,
+        ttk.Checkbutton(file_row1, text="txt", variable=self.fmt_txt_var,
                         command=self._on_format_change).pack(side="left", padx=2)
-        ttk.Checkbutton(row1, text="md", variable=self.fmt_md_var,
+        ttk.Checkbutton(file_row1, text="md", variable=self.fmt_md_var,
                         command=self._on_format_change).pack(side="left", padx=2)
-        ttk.Checkbutton(row1, text="json", variable=self.fmt_json_var,
+        ttk.Checkbutton(file_row1, text="json", variable=self.fmt_json_var,
                         command=self._on_format_change).pack(side="left", padx=(2, 12))
 
         self.thinking_var = tk.BooleanVar(value=False)
-        ttk.Checkbutton(row1, text="包含思考内容",
+        ttk.Checkbutton(file_row1, text="包含思考内容",
                         variable=self.thinking_var,
                         command=self._on_thinking_change).pack(side="left", padx=(0, 12))
 
-        ttk.Button(row1, text="刷新", command=self.refresh_exports).pack(
+        ttk.Button(file_row1, text="刷新", command=self.refresh_exports).pack(
             side="left", padx=3)
 
-        # Settings row 2: filters + search
-        row2 = ttk.Frame(self.root, padding=(10, 2, 10, 0))
-        row2.pack(fill="x")
+        # File filter row 2: filters + search
+        file_row2 = ttk.Frame(file_tab, padding=(10, 2, 10, 0))
+        file_row2.pack(fill="x")
 
         # Agent filter
-        ttk.Label(row2, text="Agent:").pack(side="left", padx=(0, 4))
+        ttk.Label(file_row2, text="Agent:").pack(side="left", padx=(0, 4))
         self.filter_var = tk.StringVar(value="全部")
-        self.filter_menu = ttk.Combobox(row2, textvariable=self.filter_var,
+        self.filter_menu = ttk.Combobox(file_row2, textvariable=self.filter_var,
                                         values=["全部"], width=12,
                                         state="readonly")
         self.filter_menu.pack(side="left", padx=(0, 10))
         self.filter_menu.bind("<<ComboboxSelected>>", self._on_filter_change)
 
         # Format filter
-        ttk.Label(row2, text="格式:").pack(side="left", padx=(0, 4))
+        ttk.Label(file_row2, text="格式:").pack(side="left", padx=(0, 4))
         self.ffilter_var = tk.StringVar(value="全部")
-        self.ffilter_menu = ttk.Combobox(row2, textvariable=self.ffilter_var,
+        self.ffilter_menu = ttk.Combobox(file_row2, textvariable=self.ffilter_var,
                                          values=["全部", "txt", "md", "json"],
                                          width=8, state="readonly")
         self.ffilter_menu.pack(side="left", padx=(0, 10))
         self.ffilter_menu.bind("<<ComboboxSelected>>", self._on_filter_change)
 
         # Thinking filter
-        ttk.Label(row2, text="思考:").pack(side="left", padx=(0, 4))
+        ttk.Label(file_row2, text="思考:").pack(side="left", padx=(0, 4))
         self.tfilter_var = tk.StringVar(value="全部")
-        self.tfilter_menu = ttk.Combobox(row2, textvariable=self.tfilter_var,
+        self.tfilter_menu = ttk.Combobox(file_row2, textvariable=self.tfilter_var,
                                          values=["全部", "无思考", "有思考"],
                                          width=8, state="readonly")
         self.tfilter_menu.pack(side="left", padx=(0, 10))
         self.tfilter_menu.bind("<<ComboboxSelected>>", self._on_filter_change)
 
         # Search
-        ttk.Label(row2, text="搜索:").pack(side="left", padx=(0, 4))
+        ttk.Label(file_row2, text="搜索:").pack(side="left", padx=(0, 4))
         self.search_var = tk.StringVar(value="")
-        self.search_entry = ttk.Entry(row2, textvariable=self.search_var, width=15)
+        self.search_entry = ttk.Entry(file_row2, textvariable=self.search_var, width=15)
         self.search_entry.pack(side="left", padx=(0, 4))
         self.search_entry.bind("<Return>", lambda e: self.refresh_exports())
-        ttk.Button(row2, text="搜索", command=self.refresh_exports).pack(
+        ttk.Button(file_row2, text="搜索", command=self.refresh_exports).pack(
             side="left", padx=(0, 4))
 
-        # exports tree with scrollbar
-        tree_frame = ttk.Frame(self.root)
-        tree_frame.pack(fill="both", expand=True, padx=10, pady=(6, 0))
+        # File tree
+        file_tree_frame = ttk.Frame(file_tab)
+        file_tree_frame.pack(fill="both", expand=True, padx=10, pady=(6, 0))
 
         cols = ("agent", "file", "mtime")
-        self.tree = ttk.Treeview(tree_frame, columns=cols, show="tree headings",
+        self.tree = ttk.Treeview(file_tree_frame, columns=cols, show="tree headings",
                                  padding=10, selectmode="extended")
         self.tree.heading("#0", text="路径 (项目)", command=lambda: self._sort_tree("#0"))
         self.tree.heading("agent", text="agent", command=lambda: self._sort_tree("agent"))
         self.tree.heading("file", text="文件", command=lambda: self._sort_tree("file"))
         self.tree.heading("mtime", text="更新时间 ↓", command=lambda: self._sort_tree("mtime"))
-        self.tree.column("#0", width=280)
-        self.tree.column("agent", width=80)
-        self.tree.column("file", width=200)
-        self.tree.column("mtime", width=140)
+        self.tree.column("#0", width=250, minwidth=150, stretch=True)
+        self.tree.column("agent", width=80, minwidth=60, stretch=False)
+        self.tree.column("file", width=200, minwidth=100, stretch=True)
+        self.tree.column("mtime", width=120, minwidth=100, stretch=False)
 
         self._sort_col = "mtime"
         self._sort_reverse = True  # descending by default (newest first)
 
-        scrollbar = ttk.Scrollbar(tree_frame, orient="vertical", command=self.tree.yview)
+        scrollbar = ttk.Scrollbar(file_tree_frame, orient="vertical", command=self.tree.yview)
         self.tree.configure(yscrollcommand=scrollbar.set)
 
         self.tree.pack(side="left", fill="both", expand=True)
@@ -362,8 +374,58 @@ class AgentLogGUI:
 
         self.tree.bind("<Double-1>", self.open_selected)
 
-        # Selection buttons bar
-        sel_bar = ttk.Frame(self.root, padding=(10, 2, 10, 0))
+        # Tab 2: Session list view
+        session_tab = ttk.Frame(self.notebook)
+        self.notebook.add(session_tab, text="会话列表")
+
+        # Session filter row
+        sess_filter_frame = ttk.Frame(session_tab, padding=(10, 6, 10, 0))
+        sess_filter_frame.pack(fill="x")
+
+        ttk.Label(sess_filter_frame, text="Agent:").pack(side="left", padx=(0, 4))
+        self.sess_agent_var = tk.StringVar(value="全部")
+        self.sess_agent_menu = ttk.Combobox(sess_filter_frame, textvariable=self.sess_agent_var,
+                                           values=["全部"], width=10, state="readonly")
+        self.sess_agent_menu.pack(side="left", padx=(0, 10))
+        self.sess_agent_menu.bind("<<ComboboxSelected>>", self._on_sess_filter_change)
+
+        ttk.Label(sess_filter_frame, text="搜索:").pack(side="left", padx=(0, 4))
+        self.sess_search_var = tk.StringVar(value="")
+        self.sess_search_entry = ttk.Entry(sess_filter_frame, textvariable=self.sess_search_var, width=15)
+        self.sess_search_entry.pack(side="left", padx=(0, 4))
+        self.sess_search_entry.bind("<Return>", lambda e: self._refresh_sessions())
+        ttk.Button(sess_filter_frame, text="搜索", command=self._refresh_sessions).pack(
+            side="left", padx=(0, 4))
+
+        sess_cols = ("agent", "project", "session_id", "start_time", "update_time", "msg_count")
+        self.session_tree = ttk.Treeview(session_tab, columns=sess_cols, show="headings",
+                                         padding=10, selectmode="browse")
+        self.session_tree.heading("agent", text="Agent", command=lambda: self._sort_session_tree("agent"))
+        self.session_tree.heading("project", text="项目路径", command=lambda: self._sort_session_tree("project"))
+        self.session_tree.heading("session_id", text="Session ID", command=lambda: self._sort_session_tree("session_id"))
+        self.session_tree.heading("start_time", text="开始时间", command=lambda: self._sort_session_tree("start_time"))
+        self.session_tree.heading("update_time", text="最后更新 ↓", command=lambda: self._sort_session_tree("update_time"))
+        self.session_tree.heading("msg_count", text="消息数", command=lambda: self._sort_session_tree("msg_count"))
+        self.session_tree.column("agent", width=80, minwidth=60, stretch=False)
+        self.session_tree.column("project", width=200, minwidth=100, stretch=True)
+        self.session_tree.column("session_id", width=100, minwidth=80, stretch=False)
+        self.session_tree.column("start_time", width=120, minwidth=100, stretch=False)
+        self.session_tree.column("update_time", width=120, minwidth=100, stretch=False)
+        self.session_tree.column("msg_count", width=60, minwidth=50, stretch=False)
+
+        self._sess_sort_col = "update_time"
+        self._sess_sort_reverse = True
+
+        sess_scrollbar = ttk.Scrollbar(session_tab, orient="vertical", command=self.session_tree.yview)
+        self.session_tree.configure(yscrollcommand=sess_scrollbar.set)
+
+        self.session_tree.pack(side="left", fill="both", expand=True)
+        sess_scrollbar.pack(side="right", fill="y")
+
+        self.session_tree.bind("<Double-1>", self._open_session_file)
+
+        # Selection buttons bar (inside file_tab)
+        sel_bar = ttk.Frame(file_tab, padding=(10, 2, 10, 0))
         sel_bar.pack(fill="x")
         self.select_all_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(sel_bar, text="全选",
@@ -376,12 +438,13 @@ class AgentLogGUI:
         self.sel_count_var = tk.StringVar(value="")
         ttk.Label(sel_bar, textvariable=self.sel_count_var, foreground="#666").pack(
             side="left", padx=10)
+        ttk.Button(sel_bar, text="打开导出目录", command=self.open_dir).pack(
+            side="right", padx=3)
         self.tree.bind("<<TreeviewSelect>>", self._on_select_change)
 
+        # Bottom bar (only minimize and quit)
         bottom = ttk.Frame(self.root, padding=6)
         bottom.pack(fill="x", side="bottom")
-        ttk.Button(bottom, text="打开导出目录", command=self.open_dir).pack(
-            side="left", padx=6)
         ttk.Button(bottom, text="最小化到托盘", command=self.minimize).pack(
             side="left", padx=6)
         ttk.Button(bottom, text="退出", command=self.quit_app).pack(
@@ -489,6 +552,42 @@ class AgentLogGUI:
     def _on_filter_change(self, event=None):
         self.select_all_var.set(False)
         self.refresh_exports()
+
+    def _on_sess_filter_change(self, event=None):
+        """Refresh session list when filter changes."""
+        self._refresh_sessions()
+
+    def _sort_session_tree(self, col):
+        """Sort session treeview by column header click."""
+        if self._sess_sort_col == col:
+            self._sess_sort_reverse = not self._sess_sort_reverse
+        else:
+            self._sess_sort_col = col
+            self._sess_sort_reverse = False
+        
+        # Update heading arrows
+        for c in ("agent", "project", "session_id", "start_time", "update_time", "msg_count"):
+            text = self.session_tree.heading(c)["text"].rstrip(" ↓↑")
+            if c == col:
+                text += " ↑" if not self._sess_sort_reverse else " ↓"
+            self.session_tree.heading(c, text=text)
+        
+        # Get all items with their values
+        items = []
+        for item in self.session_tree.get_children():
+            tags = self.session_tree.item(item, "tags")
+            vals = self.session_tree.item(item, "values")
+            idx = {"agent": 0, "project": 1, "session_id": 2, 
+                   "start_time": 3, "update_time": 4, "msg_count": 5}.get(col, 0)
+            val = vals[idx] if idx < len(vals) else ""
+            items.append((val, item, tags))
+        
+        # Sort items
+        items.sort(key=lambda x: x[0], reverse=self._sess_sort_reverse)
+        
+        # Reinsert in sorted order
+        for idx, (val, item, tags) in enumerate(items):
+            self.session_tree.move(item, "", idx)
 
     def _sort_tree(self, col):
         """Sort treeview by column header click."""
@@ -669,6 +768,157 @@ class AgentLogGUI:
             self.tree.insert("", "end", text=display_fn,
                              values=(agent, fn, mtime_str), tags=(full,))
 
+        # Refresh session list
+        self._refresh_sessions()
+
+    def _refresh_sessions(self):
+        """Refresh the session list from all agents (opencode DB + JSONL files)."""
+        for item in self.session_tree.get_children():
+            self.session_tree.delete(item)
+        
+        from datetime import datetime
+        sessions = []
+        
+        # Get filter values
+        sel_agent = self.sess_agent_var.get() if hasattr(self, 'sess_agent_var') else "全部"
+        search_key = self.sess_search_var.get().strip().lower() if hasattr(self, 'sess_search_var') else ""
+        
+        # Collect agents for filter
+        agents_set = set()
+        
+        # 1. Read opencode sessions from SQLite database
+        db_path = core._opencode_db_path()
+        if db_path and os.path.exists(db_path):
+            try:
+                import sqlite3
+                con = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+                cur = con.cursor()
+                cur.execute("""
+                    SELECT id, directory, time_created, time_updated 
+                    FROM session 
+                    WHERE directory IS NOT NULL 
+                    ORDER BY time_updated DESC
+                """)
+                
+                for sid, directory, tcreate, tupdate in cur.fetchall():
+                    # Format session ID (short version, remove ses_ prefix)
+                    sid_clean = sid[4:] if sid.startswith("ses_") else sid
+                    sid_short = sid_clean[:8] if len(sid_clean) > 8 else sid_clean
+                    
+                    # Format project path
+                    project = core.path_tail(directory, 2) if directory else "unknown"
+                    
+                    # Format start time
+                    start_time = datetime.fromtimestamp(tcreate/1000).strftime("%Y-%m-%d %H:%M") if tcreate else "unknown"
+                    
+                    # Format update time
+                    update_time = datetime.fromtimestamp(tupdate/1000).strftime("%Y-%m-%d %H:%M") if tupdate else "unknown"
+                    
+                    # Get message count
+                    cur2 = con.cursor()
+                    cur2.execute("SELECT COUNT(*) FROM message WHERE session_id=?", (sid,))
+                    msg_count = cur2.fetchone()[0]
+                    
+                    # Skip empty sessions
+                    if msg_count == 0:
+                        continue
+                    
+                    agent = "opencode"
+                    agents_set.add(agent)
+                    
+                    # Apply filters
+                    if sel_agent != "全部" and agent != sel_agent:
+                        continue
+                    if search_key:
+                        if (search_key not in project.lower() and 
+                            search_key not in sid_short.lower() and
+                            search_key not in agent.lower()):
+                            continue
+                    
+                    sessions.append((agent, project, sid_short, start_time, update_time, msg_count, sid, directory))
+                
+                con.close()
+            except Exception:
+                pass
+        
+        # 2. Read sessions from JSONL files (codebuddy, pi, claude, etc.)
+        jsonl_agents = [
+            ("codebuddy", os.path.expanduser("~/.codebuddy/projects")),
+            ("pi", os.path.expanduser("~/.pi/agent/sessions")),
+            ("claude", os.path.expanduser("~/.claude/projects")),
+        ]
+        
+        for agent_name, base_dir in jsonl_agents:
+            if not os.path.isdir(base_dir):
+                continue
+            
+            for root, dirs, files in os.walk(base_dir):
+                for fn in files:
+                    if not fn.endswith(".jsonl"):
+                        continue
+                    
+                    # Session ID is the filename without extension
+                    sid = fn[:-5]  # Remove .jsonl
+                    sid_short = sid[:8] if len(sid) > 8 else sid
+                    
+                    # Get file stats
+                    full_path = os.path.join(root, fn)
+                    try:
+                        stat = os.stat(full_path)
+                        mtime = stat.st_mtime
+                        file_size = stat.st_size
+                    except OSError:
+                        continue
+                    
+                    # Extract project path from directory structure
+                    rel_path = os.path.relpath(root, base_dir)
+                    project = rel_path.replace("\\", "-").replace("/", "-")
+                    
+                    # Format times
+                    start_time = datetime.fromtimestamp(mtime).strftime("%Y-%m-%d %H:%M")
+                    update_time = start_time
+                    
+                    # Count messages (approximate by line count)
+                    try:
+                        with open(full_path, "r", encoding="utf-8") as f:
+                            msg_count = sum(1 for line in f if line.strip())
+                    except OSError:
+                        msg_count = 0
+                    
+                    # Skip empty sessions
+                    if msg_count == 0:
+                        continue
+                    
+                    agents_set.add(agent_name)
+                    
+                    # Apply filters
+                    if sel_agent != "全部" and agent_name != sel_agent:
+                        continue
+                    if search_key:
+                        if (search_key not in project.lower() and 
+                            search_key not in sid_short.lower() and
+                            search_key not in agent_name.lower()):
+                            continue
+                    
+                    sessions.append((agent_name, project, sid_short, start_time, update_time, msg_count, sid, root))
+        
+        # Update agent filter dropdown
+        agent_list = ["全部"] + sorted(agents_set)
+        if hasattr(self, 'sess_agent_menu'):
+            current_agent = self.sess_agent_var.get()
+            self.sess_agent_menu["values"] = agent_list
+            if current_agent not in agent_list:
+                self.sess_agent_var.set("全部")
+        
+        # 3. Sort by update time (newest first)
+        sessions.sort(key=lambda x: x[4], reverse=True)
+        
+        # 4. Insert into tree
+        for agent, project, sid_short, start_time, update_time, msg_count, full_sid, directory in sessions:
+            self.session_tree.insert("", "end", 
+                                     values=(agent, project, sid_short, start_time, update_time, msg_count),
+                                     tags=(full_sid, directory))
+
     def open_selected(self, event):
         sel = self.tree.selection()
         if not sel:
@@ -681,6 +931,62 @@ class AgentLogGUI:
             os.startfile(full)
         except Exception as e:
             messagebox.showerror("打开失败", str(e))
+
+    def _open_session_file(self, event):
+        """Open the exported file for the selected session."""
+        sel = self.session_tree.selection()
+        if not sel:
+            return
+        item = sel[0]
+        values = self.session_tree.item(item, "values")
+        tags = self.session_tree.item(item, "tags")
+        if not values or not tags:
+            return
+        
+        agent = values[0]  # Agent name
+        sid, directory = tags[0], tags[1]
+        
+        # Find the exported file for this session
+        if not os.path.isdir(OUTPUT_ROOT):
+            return
+        
+        # Remove ses_ prefix if present
+        sid_clean = sid[4:] if sid.startswith("ses_") else sid
+        sid_short = sid_clean[:8] if len(sid_clean) > 8 else sid_clean
+        
+        # Get project name from directory
+        project_name = core.path_tail(directory, 2) if directory else "unknown"
+        
+        # Search for matching file in the agent directory
+        agent_dir = os.path.join(OUTPUT_ROOT, agent)
+        if not os.path.isdir(agent_dir):
+            # Try case-insensitive search
+            for d in os.listdir(OUTPUT_ROOT):
+                if d.lower() == agent.lower():
+                    agent_dir = os.path.join(OUTPUT_ROOT, d)
+                    break
+        
+        if not os.path.isdir(agent_dir):
+            messagebox.showinfo("提示", f"未找到 agent '{agent}' 的导出目录")
+            return
+        
+        # Check both regular and thinking directories
+        for subdir in ["", core.THINKING_DIR]:
+            check_dir = os.path.join(agent_dir, subdir) if subdir else agent_dir
+            if not os.path.isdir(check_dir):
+                continue
+            
+            for fn in os.listdir(check_dir):
+                if fn.startswith(project_name) and sid_short in fn:
+                    full_path = os.path.join(check_dir, fn)
+                    try:
+                        os.startfile(full_path)
+                        return
+                    except Exception as e:
+                        messagebox.showerror("打开失败", str(e))
+                        return
+        
+        messagebox.showinfo("提示", f"未找到 session {sid_short} 的导出文件")
 
     def open_dir(self):
         try:

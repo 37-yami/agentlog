@@ -14,7 +14,9 @@ __pycache__/
 agents.json
 
 # Generated launcher shortcuts (machine-specific absolute paths)
+# Ignore all .lnk files except the one in the repo root
 *.lnk
+!./agentlog-gui.lnk
 
 # PyInstaller build artifacts
 build/

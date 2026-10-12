@@ -27,8 +27,9 @@ ICON_PATH = core.ICON_PATH  # optional .ico next to the script
 # --------------------------------------------------------------------------
 def _build_tray(notify, restore, quit_app):
     """Create a tray icon. notify() shows a balloon; restore/quit_app are
-    callbacks marshalled to the tkinter thread. Returns (setup, teardown) or
-    None if unavailable."""
+    callbacks marshalled to the tkinter thread. Returns a teardown callable
+    (call once when the tray should go away), or None if the tray is
+    unavailable."""
     if sys.platform != "win32":
         return None
     try:
@@ -506,10 +507,10 @@ class AgentLogGUI:
             
             state = core.load_state()
             if settings_changed:
-                # Clear output records to force regeneration
-                for key in list(state.keys()):
-                    if isinstance(state[key], dict) and "out" in state[key]:
-                        del state[key]["out"]
+                # Drop the mtime/size cache entirely: write_export() dedupes
+                # on mtime/size alone, so merely removing "out" would keep
+                # every file skipped and nothing would be regenerated.
+                state.clear()
             
             core.scan_once(state)
             core.save_state(state)
@@ -580,6 +581,10 @@ class AgentLogGUI:
             idx = {"agent": 0, "project": 1, "session_id": 2, 
                    "start_time": 3, "update_time": 4, "msg_count": 5}.get(col, 0)
             val = vals[idx] if idx < len(vals) else ""
+            # msg_count is numeric - sort numerically, not as text
+            # ("10" must not sort before "9").
+            if col == "msg_count" and str(val).isdigit():
+                val = int(val)
             items.append((val, item, tags))
         
         # Sort items
@@ -794,113 +799,114 @@ class AgentLogGUI:
                 con = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
                 cur = con.cursor()
                 cur.execute("""
-                    SELECT id, directory, time_created, time_updated 
-                    FROM session 
-                    WHERE directory IS NOT NULL 
+                    SELECT id, directory, time_created, time_updated
+                    FROM session
+                    WHERE directory IS NOT NULL AND parent_id IS NULL
                     ORDER BY time_updated DESC
                 """)
                 
                 for sid, directory, tcreate, tupdate in cur.fetchall():
+                    if not directory:
+                        continue
                     # Format session ID (short version, remove ses_ prefix)
                     sid_clean = sid[4:] if sid.startswith("ses_") else sid
                     sid_short = sid_clean[:8] if len(sid_clean) > 8 else sid_clean
-                    
-                    # Format project path
-                    project = core.path_tail(directory, 2) if directory else "unknown"
-                    
-                    # Format start time
-                    start_time = datetime.fromtimestamp(tcreate/1000).strftime("%Y-%m-%d %H:%M") if tcreate else "unknown"
-                    
-                    # Format update time
-                    update_time = datetime.fromtimestamp(tupdate/1000).strftime("%Y-%m-%d %H:%M") if tupdate else "unknown"
-                    
+
+                    # Full project path (shown + used to find the export)
+                    project = directory
+
+                    # Beijing time, matching what the exports render
+                    start_dt = core.parse_ts(tcreate)
+                    update_dt = core.parse_ts(tupdate)
+                    start_time = start_dt.strftime("%Y-%m-%d %H:%M") if start_dt else "unknown"
+                    update_time = update_dt.strftime("%Y-%m-%d %H:%M") if update_dt else "unknown"
+
                     # Get message count
                     cur2 = con.cursor()
                     cur2.execute("SELECT COUNT(*) FROM message WHERE session_id=?", (sid,))
                     msg_count = cur2.fetchone()[0]
-                    
+
                     # Skip empty sessions
                     if msg_count == 0:
                         continue
-                    
+
                     agent = "opencode"
                     agents_set.add(agent)
-                    
+
                     # Apply filters
                     if sel_agent != "全部" and agent != sel_agent:
                         continue
                     if search_key:
-                        if (search_key not in project.lower() and 
+                        if (search_key not in project.lower() and
                             search_key not in sid_short.lower() and
                             search_key not in agent.lower()):
                             continue
-                    
+
                     sessions.append((agent, project, sid_short, start_time, update_time, msg_count, sid, directory))
-                
+
                 con.close()
             except Exception:
                 pass
         
         # 2. Read sessions from JSONL files (codebuddy, pi, claude, etc.)
         jsonl_agents = [
-            ("codebuddy", os.path.expanduser("~/.codebuddy/projects")),
-            ("pi", os.path.expanduser("~/.pi/agent/sessions")),
-            ("claude", os.path.expanduser("~/.claude/projects")),
+            ("codebuddy", os.path.expanduser("~/.codebuddy/projects"),
+             core.parse_codebuddy),
+            ("pi", os.path.expanduser("~/.pi/agent/sessions"), core.parse_pi),
+            ("claude", os.path.expanduser("~/.claude/projects"),
+             core.parse_claude),
         ]
-        
-        for agent_name, base_dir in jsonl_agents:
+
+        for agent_name, base_dir, parser in jsonl_agents:
             if not os.path.isdir(base_dir):
                 continue
-            
+
             for root, dirs, files in os.walk(base_dir):
+                # Skip sub-agent transcripts, same as the daemon scan.
+                dirs[:] = [d for d in dirs if d not in core.IGNORE_DIR_PARTS]
                 for fn in files:
                     if not fn.endswith(".jsonl"):
                         continue
-                    
-                    # Session ID is the filename without extension
-                    sid = fn[:-5]  # Remove .jsonl
-                    sid_short = sid[:8] if len(sid) > 8 else sid
-                    
-                    # Get file stats
+
                     full_path = os.path.join(root, fn)
+                    # Parse with the real parser so cwd / session id / message
+                    # count match what was exported (the storage folder name
+                    # is an encoding that cannot be mapped back reliably).
                     try:
-                        stat = os.stat(full_path)
-                        mtime = stat.st_mtime
-                        file_size = stat.st_size
+                        cwd, sid, start_dt, msgs = parser(full_path)
+                    except Exception:
+                        continue
+                    if not msgs:
+                        continue
+
+                    if not sid:
+                        sid = fn[:-6]  # strip ".jsonl"
+                    sid_clean = sid[4:] if sid.startswith("ses_") else sid
+                    sid_short = sid_clean[:8] if len(sid_clean) > 8 else sid_clean
+
+                    try:
+                        mtime = os.stat(full_path).st_mtime
                     except OSError:
                         continue
-                    
-                    # Extract project path from directory structure
-                    rel_path = os.path.relpath(root, base_dir)
-                    project = rel_path.replace("\\", "-").replace("/", "-")
-                    
-                    # Format times
-                    start_time = datetime.fromtimestamp(mtime).strftime("%Y-%m-%d %H:%M")
-                    update_time = start_time
-                    
-                    # Count messages (approximate by line count)
-                    try:
-                        with open(full_path, "r", encoding="utf-8") as f:
-                            msg_count = sum(1 for line in f if line.strip())
-                    except OSError:
-                        msg_count = 0
-                    
-                    # Skip empty sessions
-                    if msg_count == 0:
-                        continue
-                    
+
+                    project = cwd or "unknown"
+                    start_time = start_dt.strftime("%Y-%m-%d %H:%M") if start_dt else "unknown"
+                    update_time = datetime.fromtimestamp(mtime).strftime("%Y-%m-%d %H:%M")
+                    msg_count = len(msgs)
+
                     agents_set.add(agent_name)
-                    
+
                     # Apply filters
                     if sel_agent != "全部" and agent_name != sel_agent:
                         continue
                     if search_key:
-                        if (search_key not in project.lower() and 
+                        if (search_key not in project.lower() and
                             search_key not in sid_short.lower() and
                             search_key not in agent_name.lower()):
                             continue
-                    
-                    sessions.append((agent_name, project, sid_short, start_time, update_time, msg_count, sid, root))
+
+                    sessions.append((agent_name, project, sid_short, start_time,
+                                     update_time, msg_count, sid, cwd or ""))
         
         # Update agent filter dropdown
         agent_list = ["全部"] + sorted(agents_set)
@@ -942,21 +948,23 @@ class AgentLogGUI:
         tags = self.session_tree.item(item, "tags")
         if not values or not tags:
             return
-        
+
         agent = values[0]  # Agent name
-        sid, directory = tags[0], tags[1]
-        
-        # Find the exported file for this session
+        sid, cwd = tags[0], tags[1]
+        if not cwd:
+            return
+
         if not os.path.isdir(OUTPUT_ROOT):
             return
-        
+
         # Remove ses_ prefix if present
         sid_clean = sid[4:] if sid.startswith("ses_") else sid
         sid_short = sid_clean[:8] if len(sid_clean) > 8 else sid_clean
-        
-        # Get project name from directory
-        project_name = core.path_tail(directory, 2) if directory else "unknown"
-        
+
+        # Export filenames follow write_export(): path_tail(cwd) + "-" +
+        # sid_short + ".txt/.md/.json" - match that stem exactly.
+        wanted_stem = f"{core.path_tail(cwd)}-{sid_short}"
+
         # Search for matching file in the agent directory
         agent_dir = os.path.join(OUTPUT_ROOT, agent)
         if not os.path.isdir(agent_dir):
@@ -965,27 +973,27 @@ class AgentLogGUI:
                 if d.lower() == agent.lower():
                     agent_dir = os.path.join(OUTPUT_ROOT, d)
                     break
-        
+
         if not os.path.isdir(agent_dir):
             messagebox.showinfo("提示", f"未找到 agent '{agent}' 的导出目录")
             return
-        
+
         # Check both regular and thinking directories
-        for subdir in ["", core.THINKING_DIR]:
+        for subdir in ("", core.THINKING_DIR):
             check_dir = os.path.join(agent_dir, subdir) if subdir else agent_dir
             if not os.path.isdir(check_dir):
                 continue
-            
-            for fn in os.listdir(check_dir):
-                if fn.startswith(project_name) and sid_short in fn:
+
+            for fn in sorted(os.listdir(check_dir)):
+                stem, dot, ext = fn.rpartition(".")
+                if dot and ext in ("txt", "md", "json") and stem == wanted_stem:
                     full_path = os.path.join(check_dir, fn)
                     try:
                         os.startfile(full_path)
-                        return
                     except Exception as e:
                         messagebox.showerror("打开失败", str(e))
-                        return
-        
+                    return
+
         messagebox.showinfo("提示", f"未找到 session {sid_short} 的导出文件")
 
     def open_dir(self):
@@ -996,8 +1004,14 @@ class AgentLogGUI:
 
     # ---- window / tray ----
     def minimize(self):
-        self.root.withdraw()
         self._ensure_tray()
+        if self.tray_teardown is None:
+            # No tray available (non-Windows or creation failed): fall back to
+            # a normal minimize so the window stays reachable from the
+            # taskbar instead of being withdrawn forever.
+            self.root.iconify()
+            return
+        self.root.withdraw()
 
     def _ensure_tray(self):
         if self.tray_teardown is not None:

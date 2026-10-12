@@ -124,13 +124,13 @@ def path_tail(cwd, n=3):
 # --------------------------------------------------------------------------
 # Content extraction
 # --------------------------------------------------------------------------
-def extract_text(content, include_thinking=False):
-    """Extract text from content, optionally including thinking/reasoning content.
-    
-    Args:
-        content: The content to extract text from
-        include_thinking: If True, include thinking/reasoning content in output
-    
+def extract_text(content):
+    """Extract prose text and thinking/reasoning text from a content value.
+
+    Thinking blocks are always collected into the returned `thinking` string;
+    callers decide at render time (include_thinking flag in render_txt etc.)
+    whether to keep it.
+
     Returns:
         Tuple of (text, thinking) where thinking is content from THINK_TYPES
     """
@@ -151,14 +151,16 @@ def extract_text(content, include_thinking=False):
             # Skip non-text block types (tool calls, etc.)
             if bt in SKIP_TYPES and bt not in THINK_TYPES:
                 continue
-            txt = b.get("text") or b.get("content") or ""
+            txt = (b.get("text") or b.get("content") or b.get("thinking")
+                   or b.get("reasoning") or b.get("reasoning_content") or "")
+            nested_thinking = ""
             if isinstance(txt, list):  # nested
-                txt, _ = extract_text(txt, include_thinking)
+                txt, nested_thinking = extract_text(txt)
+            if nested_thinking:
+                thinking_parts.append(nested_thinking)
             if txt:
                 if bt in THINK_TYPES:
-                    # Only include thinking if requested
-                    if include_thinking:
-                        thinking_parts.append(str(txt).strip())
+                    thinking_parts.append(str(txt).strip())
                 else:
                     parts.append(str(txt).strip())
         text = "\n".join(p for p in parts if p).strip()
@@ -183,9 +185,12 @@ def looks_internal(path):
 def decode_folder_cwd(folder):
     """Decode an agent's encoded project folder name back to an absolute path.
 
-    Handles two common encodings:
-      - pi style:              '--E--other-project--'          -> E:\\other\\project
-      - codebuddy/claude style: 'e-lab-Group_meeting-202608'   -> e:\\lab\\Group_meeting\\202608
+    Handles two common encodings (both are lossy: a '-' inside a real path
+    component cannot be told apart from an encoded separator):
+      - pi style:               '--E--other--project--' -> E:\\other\\project
+        ("--" separates components, so '--E--other-project--' decodes to
+        E:\\other-project - one single directory named "other-project")
+      - codebuddy/claude style: 'e-lab-Group_meeting-202608' -> e:\\lab\\Group_meeting\\202608
     Returns None when it cannot be decoded confidently.
     """
     if not folder:
@@ -690,7 +695,8 @@ def ingest_opencode_db(watch, state):
     than JSONL. Each `session` has a `directory` (the project cwd); its
     messages live in `message` and the actual text in `part` rows. We keep
     `text` parts (user/assistant content) and drop `reasoning` / `tool` /
-    `step-*` parts, matching the other parsers."""
+    `step-*` parts, matching the other parsers. Sub-agent sessions (parent_id)
+    and connectivity probes are skipped entirely."""
     dbp = _opencode_db_path()
     if not dbp:
         return
@@ -702,9 +708,12 @@ def ingest_opencode_db(watch, state):
         return
     try:
         cur = con.cursor()
-        # Newest session per project wins (scanned last -> overwrites file).
+        # Sub-agent sessions (parent_id set, e.g. @explore tasks) are internal
+        # chatter - the task prompt shows up as a fake "user" message - so only
+        # top-level sessions are exported.
         cur.execute("SELECT id, directory, time_created, time_updated "
-                    "FROM session ORDER BY time_updated DESC")
+                    "FROM session WHERE parent_id IS NULL "
+                    "ORDER BY time_updated DESC")
         for sid, directory, tcreate, tupdate in cur.fetchall():
             cwd = directory
             if not cwd:
@@ -726,6 +735,7 @@ def ingest_opencode_db(watch, state):
                              "ORDER BY time_created ASC", (mid,))
                 chunks = []
                 other_parts = []
+                has_tool = False
                 for (pdata,) in cur3.fetchall():
                     try:
                         p = json.loads(pdata)
@@ -737,6 +747,8 @@ def ingest_opencode_db(watch, state):
                         if t:
                             chunks.append(t)
                     else:
+                        if ptype and ptype.startswith("tool"):
+                            has_tool = True
                         # All non-text parts go to thinking (reasoning, tool, step-start, etc.)
                         t = p.get("text") or p.get("reasoning") or p.get("tool") or ""
                         if t:
@@ -744,6 +756,12 @@ def ingest_opencode_db(watch, state):
                                 t = json.dumps(t, ensure_ascii=False)
                             other_parts.append(f"[{ptype}] {t}")
                 text = "\n".join(chunks).strip()
+                # opencode keeps "narrating while acting" texts in the same
+                # assistant message as the tool parts; the final answer comes
+                # as a plain text message without tools. Mirror the
+                # DROP_PRE_TOOL_ASSISTANT rule here.
+                if role == "assistant" and DROP_PRE_TOOL_ASSISTANT and has_tool:
+                    text = ""
                 thinking = "\n".join(other_parts).strip()
                 if not text:
                     continue
@@ -751,6 +769,12 @@ def ingest_opencode_db(watch, state):
                 msgs.append((parse_ts(ts), role, text, thinking))
             key = f"opencode-db:{sid}"
             mtime = (tupdate or tcreate or 0) / 1000.0
+            # Skip connectivity probes (e.g. skills that send "Reply with
+            # exactly: OK"): exactly one question plus one tiny reply.
+            if (len(msgs) == 2 and msgs[0][1] == "user"
+                    and msgs[1][1] == "assistant" and len(msgs[1][2]) <= 30):
+                state[key] = {"mtime": mtime, "size": len(msgs), "out": None}
+                continue
             write_export(agent, cwd, sid, parse_ts(tcreate), msgs,
                          key, mtime, len(msgs), state,
                          include_thinking=INCLUDE_THINKING, output_formats=OUTPUT_FORMATS)
@@ -955,47 +979,44 @@ def is_running(pid):
 
 def _find_agentlog_pids():
     """Return pids of python/pythonw processes running the *daemon*
-    (agentlog.py). Explicitly excludes the GUI (agentlog_gui.py) so that
-    stopping/restarting the daemon never kills the GUI itself. Uses PowerShell
-    (hidden window) and falls back to the pid-file pid when PowerShell is
-    unavailable."""
+    (`agentlog.py run`). Only command lines ending in ``agentlog.py run``
+    match, so a concurrent `stop`/`start` invocation, the GUI
+    (agentlog_gui.py) and editors that merely have the file open are never
+    matched; this very process is excluded too. Falls back to the pid-file
+    pid when PowerShell is unavailable."""
+    me = os.getpid()
     pids = []
     try:
         rc, out, _ = run_cmd([
             "powershell", "-NoProfile", "-NonInteractive", "-Command",
             "Get-CimInstance Win32_Process -Filter \"name='pythonw.exe' or "
-            "name='python.exe'\" | Where-Object { $_.CommandLine -like "
-            "'*agentlog.py*' -and $_.CommandLine -notlike '*agentlog_gui.py*' } "
+            "name='python.exe'\" | Where-Object { $_.CommandLine -match "
+            "'agentlog\\.py\"?\\s+run\\s*$' } "
             "| ForEach-Object { $_.ProcessId }"
         ])
         if rc == 0:
             for tok in out.split():
                 tok = tok.strip()
-                if tok.isdigit():
+                if tok.isdigit() and int(tok) != me:
                     pids.append(int(tok))
     except Exception:
         pass
     if not pids:
         pid = read_pid()
-        if pid and is_running(pid):
+        if pid and pid != me and is_running(pid):
             pids.append(pid)
     return pids
 
 
 def _kill_all_agentlog():
-    """Kill every python/pythonw process whose command line runs agentlog.py
-    (handles strays / duplicates). Falls back to the pid-file pid."""
+    """Kill every python/pythonw process whose command line runs the agentlog
+    daemon (`agentlog.py run`). _find_agentlog_pids() already covers the
+    pid-file fallback."""
     pids = []
     for pid in _find_agentlog_pids():
         subprocess.run(["taskkill", "/PID", str(pid), "/F"],
                        capture_output=True, creationflags=CREATE_NO_WINDOW)
         pids.append(str(pid))
-    if not pids:
-        pid = read_pid()
-        if pid and is_running(pid):
-            subprocess.run(["taskkill", "/PID", str(pid), "/F"],
-                           capture_output=True, creationflags=CREATE_NO_WINDOW)
-            pids.append(str(pid))
     return pids
 
 
@@ -1316,7 +1337,9 @@ def main():
         write_pid(os.getpid())
         run_loop()
     elif args.action == "once":
-        scan_once(load_state())
+        state = load_state()
+        scan_once(state)
+        save_state(state)
         print("scan complete. see log:", LOG_FILE)
     elif args.action == "start":
         cmd_start()

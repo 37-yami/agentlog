@@ -531,7 +531,12 @@ class AgentLogGUI:
 
     def _autostart_on(self):
         try:
-            return os.path.exists(core.startup_lnk_path())
+            if not os.path.exists(core.startup_lnk_path()):
+                return False
+            # The lnk alone is not enough: Windows skips it at logon when the
+            # StartupApproved flag marks it disabled (Task Manager / OEM
+            # startup managers can set that behind our back).
+            return not core.autostart_blocked()
         except Exception:
             return False
 

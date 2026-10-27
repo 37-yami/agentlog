@@ -1074,6 +1074,11 @@ def cmd_status():
     pid = read_pid()
     running = is_running(pid)
     print(f"running: {running}" + (f" (pid {pid})" if pid else ""))
+    if sys.platform == "win32" and os.path.exists(startup_lnk_path()):
+        state = ("BLOCKED (disabled via StartupApproved; re-run install "
+                 "or re-tick the GUI checkbox to fix)" if autostart_blocked()
+                 else "enabled")
+        print(f"autostart: {state}")
     print(f"log: {LOG_FILE}")
     print(f"state: {STATE_FILE}")
 
@@ -1090,6 +1095,48 @@ def startup_folder():
 
 def startup_lnk_path():
     return os.path.join(startup_folder(), "agentlog.lnk")
+
+
+def startup_approved_key():
+    """Registry key where Windows records the enabled/disabled state of each
+    Startup-folder item (what Task Manager's Startup tab toggles)."""
+    return (r"Software\Microsoft\Windows\CurrentVersion\Explorer"
+            r"\StartupApproved\StartupFolder")
+
+
+def startup_approved_bytes():
+    """Raw StartupApproved value for our lnk, or None when unset.
+
+    No value means "never touched" and counts as enabled."""
+    import winreg
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, startup_approved_key(),
+                            0, winreg.KEY_QUERY_VALUE) as k:
+            data, _ = winreg.QueryValueEx(k, "agentlog.lnk")
+            return bytes(data)
+    except OSError:
+        return None
+
+
+def autostart_blocked():
+    """True when Windows will skip our Startup lnk at logon: the
+    StartupApproved flag's low bit marks the item as disabled (Task Manager,
+    OEM startup managers or cleanup tools may set it behind our back)."""
+    data = startup_approved_bytes()
+    return data is not None and bool(data[0] & 1)
+
+
+def set_startup_approved(enabled=True):
+    """Write the standard StartupApproved flag so Windows honours our lnk.
+
+    Users enable autostart explicitly (GUI checkbox / `install`), so clearing
+    a disable flag left by other software here matches their intent - it is
+    what pressing "Enable" in Task Manager would do."""
+    import winreg
+    flag = 0x02 if enabled else 0x03
+    data = bytes([flag, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])
+    with winreg.CreateKey(winreg.HKEY_CURRENT_USER, startup_approved_key()) as k:
+        winreg.SetValueEx(k, "agentlog.lnk", 0, winreg.REG_BINARY, data)
 
 
 # --------------------------------------------------------------------------
@@ -1214,12 +1261,19 @@ def cmd_install():
     exe = pythonw_exe()
     script = os.path.abspath(__file__)
     # A .lnk in the per-user Startup folder is the primary autostart channel:
-    # it needs no admin and (unlike the Run key) is not swept by startup
-    # managers such as Lenovo's. The shortcut launches `start` (idempotent).
+    # it needs no admin and survives most Run-key sweeps by OEM startup
+    # managers. The shortcut launches `start` (idempotent).
     lnk = startup_lnk_path()
     try:
         create_shortcut(lnk, exe, f'"{script}" start', os.path.dirname(script))
         print(f"autostart enabled via Startup shortcut: {lnk}")
+        # Windows skips the lnk at logon when StartupApproved marks it
+        # disabled (Task Manager / OEM tools can set this behind our back).
+        # Re-assert the enabled flag so the checkbox actually works.
+        try:
+            set_startup_approved(True)
+        except Exception as e:
+            print("could not update StartupApproved flag:", e)
     except Exception as e:
         print("could not create Startup shortcut:", e)
         # Fall back to the registry Run key for machines where the Startup
@@ -1237,6 +1291,15 @@ def cmd_uninstall():
     try:
         os.remove(startup_lnk_path())
         print("Startup shortcut removed.")
+    except OSError:
+        pass
+    # Remove the StartupApproved flag too so no stale disabled marker is
+    # left behind for a future reinstall.
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, startup_approved_key(),
+                            0, winreg.KEY_SET_VALUE) as k:
+            winreg.DeleteValue(k, "agentlog.lnk")
     except OSError:
         pass
     try:

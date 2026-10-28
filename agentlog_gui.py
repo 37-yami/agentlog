@@ -613,7 +613,13 @@ class AgentLogGUI:
             if c == col:
                 text += " ↑" if not self._sort_reverse else " ↓"
             self.tree.heading(c, text=text)
-        
+        self._apply_tree_sort()
+
+    def _apply_tree_sort(self):
+        """Reorder the file tree by the current _sort_col/_sort_reverse
+        (without toggling). Called after every refresh so the list is
+        displayed sorted by default."""
+        col = self._sort_col
         # Get all items with their values
         items = []
         for item in self.tree.get_children():
@@ -778,6 +784,9 @@ class AgentLogGUI:
             self.tree.insert("", "end", text=display_fn,
                              values=(agent, fn, mtime_str), tags=(full,))
 
+        # Apply current sort (default: mtime descending)
+        self._apply_tree_sort()
+
         # Refresh session list
         self._refresh_sessions()
 
@@ -803,14 +812,32 @@ class AgentLogGUI:
                 import sqlite3
                 con = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
                 cur = con.cursor()
-                cur.execute("""
-                    SELECT id, directory, time_created, time_updated
-                    FROM session
-                    WHERE directory IS NOT NULL AND parent_id IS NULL
-                    ORDER BY time_updated DESC
-                """)
-                
-                for sid, directory, tcreate, tupdate in cur.fetchall():
+                # sid -> (directory, tcreate, tupdate, source); session_v2 wins
+                db_sessions = {}
+                try:
+                    cur.execute("""
+                        SELECT id, directory, time_created, time_updated
+                        FROM session_v2
+                        WHERE directory IS NOT NULL AND parent_id IS NULL
+                    """)
+                    for sid, directory, tcreate, tupdate in cur.fetchall():
+                        db_sessions[sid] = (directory, tcreate, tupdate, "v2")
+                except sqlite3.OperationalError:
+                    pass
+                try:
+                    cur.execute("""
+                        SELECT id, directory, time_created, time_updated
+                        FROM session
+                        WHERE directory IS NOT NULL AND parent_id IS NULL
+                    """)
+                    for sid, directory, tcreate, tupdate in cur.fetchall():
+                        if sid not in db_sessions:
+                            db_sessions[sid] = (directory, tcreate, tupdate, "legacy")
+                except sqlite3.OperationalError:
+                    pass
+
+                for sid, (directory, tcreate, tupdate, src) in \
+                        sorted(db_sessions.items(), key=lambda kv: -(kv[1][2] or kv[1][1] or 0)):
                     if not directory:
                         continue
                     # Format session ID (short version, remove ses_ prefix)
@@ -826,9 +853,13 @@ class AgentLogGUI:
                     start_time = start_dt.strftime("%Y-%m-%d %H:%M") if start_dt else "unknown"
                     update_time = update_dt.strftime("%Y-%m-%d %H:%M") if update_dt else "unknown"
 
-                    # Get message count
+                    # Get message count (user/assistant only, matching exports)
                     cur2 = con.cursor()
-                    cur2.execute("SELECT COUNT(*) FROM message WHERE session_id=?", (sid,))
+                    if src == "v2":
+                        cur2.execute("SELECT COUNT(*) FROM session_message "
+                                     "WHERE session_id=? AND type IN ('user','assistant')", (sid,))
+                    else:
+                        cur2.execute("SELECT COUNT(*) FROM message WHERE session_id=?", (sid,))
                     msg_count = cur2.fetchone()[0]
 
                     # Skip empty sessions

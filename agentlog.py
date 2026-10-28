@@ -690,13 +690,119 @@ def _opencode_db_path():
     return None
 
 
+def _append_db_message(msgs, m, role, chunks, other_parts, has_tool, mtc):
+    text = "\n".join(chunks).strip()
+    # opencode keeps "narrating while acting" texts in the same
+    # assistant message as the tool parts; the final answer comes
+    # as a plain text message without tools. Mirror the
+    # DROP_PRE_TOOL_ASSISTANT rule here.
+    if role == "assistant" and DROP_PRE_TOOL_ASSISTANT and has_tool:
+        text = ""
+    thinking = "\n".join(other_parts).strip()
+    if not text:
+        return
+    ts = (m.get("time") or {}).get("created") or mtc
+    msgs.append((parse_ts(ts), role, text, thinking))
+
+
+def _read_legacy_session_messages(con, sid):
+    """Messages from the legacy `message`/`part` tables."""
+    msgs = []
+    cur2 = con.cursor()
+    cur2.execute("SELECT id, data, time_created FROM message "
+                 "WHERE session_id=? ORDER BY time_created ASC", (sid,))
+    for mid, mdata, mtc in cur2.fetchall():
+        try:
+            m = json.loads(mdata)
+        except Exception:
+            continue
+        role = m.get("role")
+        if role not in ("user", "assistant"):
+            continue
+        chunks = []
+        other_parts = []
+        has_tool = False
+        cur3 = con.cursor()
+        cur3.execute("SELECT data FROM part WHERE message_id=? "
+                     "ORDER BY time_created ASC", (mid,))
+        for (pdata,) in cur3.fetchall():
+            try:
+                p = json.loads(pdata)
+            except Exception:
+                continue
+            ptype = p.get("type")
+            if ptype == "text":
+                t = p.get("text")
+                if t:
+                    chunks.append(t)
+            else:
+                if ptype and ptype.startswith("tool"):
+                    has_tool = True
+                # All non-text parts go to thinking (reasoning, tool, step-start, etc.)
+                t = p.get("text") or p.get("reasoning") or p.get("tool") or ""
+                if t:
+                    if isinstance(t, dict):
+                        t = json.dumps(t, ensure_ascii=False)
+                    other_parts.append(f"[{ptype}] {t}")
+        _append_db_message(msgs, m, role, chunks, other_parts, has_tool, mtc)
+    return msgs
+
+
+def _read_session_v2_messages(con, sid):
+    """Messages from the newer event-sourced `session_message` table, where
+    user text and assistant content parts are embedded in the message JSON."""
+    msgs = []
+    cur2 = con.cursor()
+    cur2.execute("SELECT type, data, time_created FROM session_message "
+                 "WHERE session_id=? ORDER BY seq ASC", (sid,))
+    for mtype, mdata, mtc in cur2.fetchall():
+        if mtype not in ("user", "assistant"):
+            continue
+        try:
+            m = json.loads(mdata)
+        except Exception:
+            continue
+        chunks = []
+        other_parts = []
+        has_tool = False
+        if mtype == "user":
+            t = m.get("text")
+            if t:
+                chunks.append(t)
+        else:
+            for p in m.get("content") or []:
+                if not isinstance(p, dict):
+                    continue
+                ptype = p.get("type")
+                if ptype == "text":
+                    t = p.get("text")
+                    if t:
+                        chunks.append(t)
+                    continue
+                if ptype == "tool":
+                    has_tool = True
+                    st = p.get("state") or {}
+                    t = st.get("input") or ""
+                else:
+                    t = p.get("text") or p.get("reasoning") or ""
+                if t:
+                    if isinstance(t, (dict, list)):
+                        t = json.dumps(t, ensure_ascii=False)
+                    other_parts.append(f"[{ptype}] {t}")
+        _append_db_message(msgs, m, mtype, chunks, other_parts, has_tool, mtc)
+    return msgs
+
+
 def ingest_opencode_db(watch, state):
     """opencode (newer versions) stores sessions in a SQLite database rather
-    than JSONL. Each `session` has a `directory` (the project cwd); its
-    messages live in `message` and the actual text in `part` rows. We keep
-    `text` parts (user/assistant content) and drop `reasoning` / `tool` /
-    `step-*` parts, matching the other parsers. Sub-agent sessions (parent_id)
-    and connectivity probes are skipped entirely."""
+    than JSONL. Each session row has a `directory` (the project cwd). Two
+    schema generations exist: the legacy `session`/`message`/`part` tables
+    and (since late-2026 builds) the event-sourced `session_v2` +
+    `session_message` tables. We read both; on duplicate session ids
+    session_v2 wins since it holds the migrated history plus all newer
+    messages. We keep text parts (user/assistant content) and drop
+    `reasoning` / `tool` / `step-*` parts, matching the other parsers.
+    Sub-agent sessions (parent_id) and connectivity probes are skipped."""
     dbp = _opencode_db_path()
     if not dbp:
         return
@@ -710,63 +816,30 @@ def ingest_opencode_db(watch, state):
         cur = con.cursor()
         # Sub-agent sessions (parent_id set, e.g. @explore tasks) are internal
         # chatter - the task prompt shows up as a fake "user" message - so only
-        # top-level sessions are exported.
-        cur.execute("SELECT id, directory, time_created, time_updated "
-                    "FROM session WHERE parent_id IS NULL "
-                    "ORDER BY time_updated DESC")
-        for sid, directory, tcreate, tupdate in cur.fetchall():
-            cwd = directory
+        # top-level sessions are exported. sid -> [directory, tcreate, tupdate, src]
+        sessions = {}
+        try:
+            cur.execute("SELECT id, directory, time_created, time_updated "
+                        "FROM session WHERE parent_id IS NULL")
+            for sid, directory, tcreate, tupdate in cur.fetchall():
+                sessions[sid] = [directory, tcreate, tupdate, "legacy"]
+        except sqlite3.OperationalError as e:
+            log(f"[opencode-db] legacy session table unavailable: {e}")
+        try:
+            cur.execute("SELECT id, directory, time_created, time_updated "
+                        "FROM session_v2 WHERE parent_id IS NULL")
+            for sid, directory, tcreate, tupdate in cur.fetchall():
+                sessions[sid] = [directory, tcreate, tupdate, "v2"]
+        except sqlite3.OperationalError:
+            pass
+        for sid, (cwd, tcreate, tupdate, src) in \
+                sorted(sessions.items(), key=lambda kv: -(kv[1][2] or kv[1][1] or 0)):
             if not cwd:
                 continue
-            msgs = []
-            cur2 = con.cursor()
-            cur2.execute("SELECT id, data, time_created FROM message "
-                         "WHERE session_id=? ORDER BY time_created ASC", (sid,))
-            for mid, mdata, mtc in cur2.fetchall():
-                try:
-                    m = json.loads(mdata)
-                except Exception:
-                    continue
-                role = m.get("role")
-                if role not in ("user", "assistant"):
-                    continue
-                cur3 = con.cursor()
-                cur3.execute("SELECT data FROM part WHERE message_id=? "
-                             "ORDER BY time_created ASC", (mid,))
-                chunks = []
-                other_parts = []
-                has_tool = False
-                for (pdata,) in cur3.fetchall():
-                    try:
-                        p = json.loads(pdata)
-                    except Exception:
-                        continue
-                    ptype = p.get("type")
-                    if ptype == "text":
-                        t = p.get("text")
-                        if t:
-                            chunks.append(t)
-                    else:
-                        if ptype and ptype.startswith("tool"):
-                            has_tool = True
-                        # All non-text parts go to thinking (reasoning, tool, step-start, etc.)
-                        t = p.get("text") or p.get("reasoning") or p.get("tool") or ""
-                        if t:
-                            if isinstance(t, dict):
-                                t = json.dumps(t, ensure_ascii=False)
-                            other_parts.append(f"[{ptype}] {t}")
-                text = "\n".join(chunks).strip()
-                # opencode keeps "narrating while acting" texts in the same
-                # assistant message as the tool parts; the final answer comes
-                # as a plain text message without tools. Mirror the
-                # DROP_PRE_TOOL_ASSISTANT rule here.
-                if role == "assistant" and DROP_PRE_TOOL_ASSISTANT and has_tool:
-                    text = ""
-                thinking = "\n".join(other_parts).strip()
-                if not text:
-                    continue
-                ts = (m.get("time") or {}).get("created") or mtc
-                msgs.append((parse_ts(ts), role, text, thinking))
+            if src == "v2":
+                msgs = _read_session_v2_messages(con, sid)
+            else:
+                msgs = _read_legacy_session_messages(con, sid)
             key = f"opencode-db:{sid}"
             mtime = (tupdate or tcreate or 0) / 1000.0
             # Skip connectivity probes (e.g. skills that send "Reply with

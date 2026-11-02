@@ -57,12 +57,16 @@ _write_lock = threading.Lock()
 def norm_cwd(s):
     """Normalize a working-directory string so the same project always maps
     to the same key regardless of separator style ('E:/a/b' vs 'E:\\a\\b')
-    or a trailing slash. Keep agentlog.norm_cwd in sync."""
+    or a trailing slash. Platform-aware: POSIX paths keep forward slashes.
+    Keep agentlog.norm_cwd in sync."""
     if not s:
         return s
-    s = s.replace("/", "\\")
+    if os.name == "nt":
+        s = s.replace("/", "\\")
+        s = os.path.normpath(s)
+        return s.rstrip("\\")
     s = os.path.normpath(s)
-    return s.rstrip("\\")
+    return s
 
 
 # ---------------------------------------------------------------------------

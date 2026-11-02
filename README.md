@@ -47,31 +47,40 @@ By default, thinking/reasoning content is not included. When enabled, files
 are saved to the `_thinking` subfolder:
 
 ```
-agent_logs/<agent>/<file>.txt          # Without thinking
-agent_logs/<agent>/_thinking/<file>.txt # With thinking
+agent_logs/<agent>/<file>.md          # Without thinking
+agent_logs/<agent>/_thinking/<file>.md # With thinking
 ```
 
-Each file starts with metadata, then the conversation:
+Each file starts with metadata, then the conversation (Markdown by default):
 
-```
-# Agent: claude
-# Path: /path/to/your/project/v2
-# Session: <session-id>
-# Start (Beijing): 2026-08-17 11:50:03
-# Messages: 12
+````markdown
+# Agent Conversation Log
 
-[2026-08-17 11:50:15] User:
+- **Agent:** claude
+- **Path:** `/path/to/your/project/v2`
+- **Session:** `<session-id>`
+- **Start (Beijing):** 2026-08-17 11:50:03
+- **Messages:** 12
+
+---
+
+## [2026-08-17 11:50:15] User
+
 How do I ...
 
-[2026-08-17 11:50:31] Assistant:
+## [2026-08-17 11:50:31] Assistant
+
 You can ...
-```
+````
 
 ## Requirements
 
 - Python 3.8+ (tested on 3.13), **standard library only** — no `pip install`.
-- Windows. Auto-start uses a shortcut in your personal **Startup folder**
+- **Windows**: auto-start uses a shortcut in your personal **Startup folder**
   (no admin needed).
+- **Linux / WSL**: systemd required (WSL: enable it in `/etc/wsl.conf`).
+  Auto-start uses a **systemd user service**; background start, single-
+  instance lock and process management are all adapted.
 
 ## Install & run
 
@@ -87,7 +96,9 @@ python agentlog.py once
 python agentlog.py install
 ```
 
-That is it. The daemon polls every 5 seconds; idle CPU is ~0.
+That is it. The daemon polls every 5 seconds; idle CPU is ~0. On Linux/WSL
+the same commands work with `python3`; `install` writes the systemd user
+service `~/.config/systemd/user/agentlog.service` and enables lingering.
 
 > **Why a Startup-folder shortcut and not the registry `Run` key?**
 > Some machines run a startup manager (e.g. Lenovo's "smart" services) that
@@ -103,10 +114,11 @@ That is it. The daemon polls every 5 seconds; idle CPU is ~0.
 | `python agentlog.py once` | Single scan, then exit (useful for testing) |
 | `python agentlog.py start` | Launch the background daemon now |
 | `python agentlog.py stop` | Stop the background daemon |
-| `python agentlog.py status` | Is the daemon running? |
-| `python agentlog.py install` | Enable logon auto-start (Startup shortcut) + start now |
-| `python agentlog.py uninstall` | Stop + remove the Startup shortcut |
-| `python agentlog.py gui-shortcut` | Create a double-click GUI launcher (repo dir + Desktop) |
+| `python agentlog.py status` | Daemon / auto-start / proxy health |
+| `python agentlog.py install` | Enable logon auto-start + start now |
+| `python agentlog.py uninstall` | Stop + remove the auto-start entry |
+| `python agentlog.py route` | How to point each agent's API at the local routing proxy |
+| `python agentlog.py gui-shortcut` | Create a double-click GUI launcher (repo dir + Desktop, Windows) |
 | `python agentlog.py build-icon <img>` | Regenerate `agentlog.ico` (tray/window/shortcut) from an image |
 
 ### CLI arguments
@@ -273,13 +285,51 @@ Each parser keeps only `user`/`assistant` messages. It additionally:
 - ignores `subagents/` directories (those are internal chatter, not standalone
   conversations).
 
+## Local routing proxy (experimental)
+
+Besides reading each agent's own storage, agentlog ships a **local HTTP proxy**
+(started automatically with the daemon on `127.0.0.1:8765`). Point an agent's
+API endpoint at it and every question/answer pair is captured at request time:
+
+```
+agent CLI ──(baseURL -> 127.0.0.1:8765/<agent>)──> local proxy
+                                                   ├─ forwarded unchanged to the real API
+                                                   └─ Q/A captured -> capture/<agent>/<date>.jsonl
+                                                        └─ merged per project like every other source
+```
+
+```bash
+python agentlog.py route   # per-agent routing instructions
+```
+
+Claude example: `setx ANTHROPIC_BASE_URL http://127.0.0.1:8765/claude`
+(restart the terminal afterwards). Anthropic (`/v1/messages`) and
+OpenAI-compatible (`/v1/chat/completions`) protocols are understood, streamed
+or buffered; everything else is forwarded untouched.
+
+Notes:
+
+- **Merged conversations**: capture is aggregated per `(agent, project)`;
+  turns from different days land in the same export file.
+- **Mutual exclusion**: once a project is covered by capture, the file/db
+  scrape for that agent+project is suppressed automatically (no double
+  writes). Delete the matching `capture/` data to fall back.
+- **Single point of failure**: routed agents need the daemon alive. `status`
+  and the GUI status bar show proxy health; while agentlog is stopped,
+  routed agents cannot reach their API.
+- **Project path comes from the system prompt**: Claude Code states it
+  reliably; for agents that don't, keep using the native file/db scrape
+  (it knows the project natively).
+
 ## Files
 
-- `agentlog.py` — the tool (daemon + CLI + per-agent parsers).
+- `agentlog.py` — the tool (daemon + CLI + per-agent parsers + proxy host).
+- `agentlog_proxy.py` — the local routing proxy (HTTP forwarding + Q/A capture).
 - `agentlog_gui.py` — optional GUI (window + system tray), reusing the above logic.
 - `agentlog.ico` — icon file (tray / window title bar / shortcut).
 - `agents.example.json` — optional config template.
 - `agent_logs/` — generated exports
+- `capture/` — raw Q/A turns captured by the proxy (per agent/day)
 
 ## License
 

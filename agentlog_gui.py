@@ -534,6 +534,8 @@ class AgentLogGUI:
 
     def _autostart_on(self):
         try:
+            if os.name != "nt":
+                return core._systemctl_user("is-enabled", "agentlog.service") == 0
             if not os.path.exists(core.startup_lnk_path()):
                 return False
             # The lnk alone is not enough: Windows skips it at logon when the

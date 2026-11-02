@@ -37,30 +37,38 @@ agent_logs/<agent>/<最底层三个路径>.<格式>
 默认不输出思考/推理内容。开启后,文件会保存到 `_thinking` 子文件夹:
 
 ```
-agent_logs/<agent>/<文件>.txt          # 无思考内容
-agent_logs/<agent>/_thinking/<文件>.txt  # 包含思考内容
+agent_logs/<agent>/<文件>.md          # 无思考内容
+agent_logs/<agent>/_thinking/<文件>.md  # 包含思考内容
 ```
 
-每个文件开头是元信息,然后是对话内容:
+每个文件开头是元信息,然后是对话内容(默认 Markdown 格式):
 
-```
-# Agent: claude
-# Path: /path/to/your/project/v2
-# Session: <session-id>
-# Start (Beijing): 2026-08-17 11:50:03
-# Messages: 12
+````markdown
+# Agent Conversation Log
 
-[2026-08-17 11:50:15] User:
+- **Agent:** claude
+- **Path:** `/path/to/your/project/v2`
+- **Session:** `<session-id>`
+- **Start (Beijing):** 2026-08-17 11:50:03
+- **Messages:** 12
+
+---
+
+## [2026-08-17 11:50:15] User
+
 怎么实现 ...
 
-[2026-08-17 11:50:31] Assistant:
+## [2026-08-17 11:50:31] Assistant
+
 可以这样 ...
-```
+````
 
 ## 环境要求
 
 - Python 3.8+(已在 3.13 测试),**仅用标准库**——不需要 `pip install`。
-- Windows。开机自启动使用个人 **启动文件夹** 里的快捷方式(无需管理员权限)。
+- **Windows**:开机自启使用个人 **启动文件夹** 里的快捷方式(无需管理员权限)。
+- **Linux / WSL**:要求 systemd(WSL 需启用 systemd)。开机自启使用
+  **systemd 用户服务**,后台启动、单实例锁、进程管理均已适配。
 
 ## 安装与使用
 
@@ -84,6 +92,11 @@ python agentlog.py install
 > 不会被这样清理。只有当启动文件夹不可写时,`install` 才会回退到注册表
 > `Run` 键。
 
+> **Linux/WSL**:同样的命令(`python3 agentlog.py once/install/...`)。
+> `install` 会写入 systemd 用户服务 `~/.config/systemd/user/agentlog.service`
+> 并开启 linger,WSL 需在 `/etc/wsl.conf` 启用 systemd(`[boot]
+> systemd=true` 后 `wsl --shutdown` 重启生效)。
+
 ## 命令
 
 | 命令 | 说明 |
@@ -92,10 +105,11 @@ python agentlog.py install
 | `python agentlog.py once` | 只扫描一次后退出(用于测试) |
 | `python agentlog.py start` | 立即在后台启动守护进程 |
 | `python agentlog.py stop` | 停止后台守护进程 |
-| `python agentlog.py status` | 查看守护进程是否在运行 |
-| `python agentlog.py install` | 启用开机自启(启动文件夹快捷方式)+ 立即启动 |
-| `python agentlog.py uninstall` | 停止并移除启动快捷方式 |
-| `python agentlog.py gui-shortcut` | 生成 GUI 双击启动快捷方式(仓库内 + 桌面) |
+| `python agentlog.py status` | 查看守护进程/开机自启/代理的状态 |
+| `python agentlog.py install` | 启用开机自启 + 立即启动 |
+| `python agentlog.py uninstall` | 停止并移除自启项 |
+| `python agentlog.py route` | 查看如何把各 agent 的 API 指向本地路由代理 |
+| `python agentlog.py gui-shortcut` | 生成 GUI 双击启动快捷方式(仓库内 + 桌面,Windows) |
 | `python agentlog.py build-icon <图片>` | 用任意图片重新生成托盘/窗口/快捷方式用的 `agentlog.ico` |
 
 ### 命令行参数
@@ -244,13 +258,48 @@ cp agents.example.json agents.json   # 可选;按需编辑
 - 丢弃工具调用前紧邻的 assistant 叙述(即"自言自语"的思考行),
 - 忽略 `subagents/` 目录(那是子 agent 的内部对话,不是独立会话)。
 
+## 本地路由代理(实验性)
+
+除了读取各 agent 自己的存储文件,agentlog 还内置了一个**本地 HTTP 代理**
+(随守护进程自动启动,监听 `127.0.0.1:8765`)。把 agent 的 API 端点指向它,
+每次请求的**提问与回答**会在请求发生时被直接捕获:
+
+```
+agent CLI ──(baseURL 指向 127.0.0.1:8765/<agent>)──> 本地代理
+                                                      ├─ 原样转发到真实 API
+                                                      └─ 记录 Q/A → capture/<agent>/<日期>.jsonl
+                                                           └─ 按项目合并导出(与其他来源相同)
+```
+
+```bash
+python agentlog.py route   # 查看各 agent 的接入配置
+```
+
+claude 的接入示例:`setx ANTHROPIC_BASE_URL http://127.0.0.1:8765/claude`
+(之后重启终端)。代理支持 Anthropic(`/v1/messages`)与 OpenAI 兼容
+(`/v1/chat/completions`)两种协议,流式与非流式均可,其余路径原样透传。
+
+特点与注意事项:
+
+- **同一对话自动合并**:capture 按 `(agent, 项目路径)` 聚合,跨天的对话
+  会并入同一个导出文件;
+- **互斥**:某项目一旦被 capture 覆盖,该 agent 在此项目的文件/数据库
+  抓取会自动抑制,不会双写;删除 `capture/` 里的对应数据即可回退;
+- **单点**:走代理的 agent 依赖守护进程存活。`status` 与 GUI 状态栏都会
+  显示代理健康状态;守护进程停止期间,被路由的 agent 将无法连接 API;
+- **项目路径来自 system prompt**:Claude Code 会稳定声明工作目录;对于
+  不声明路径的 agent(部分 opencode/codebuddy 配置),继续使用原生的
+  文件/数据库抓取更可靠(它们天然知道项目路径)。
+
 ## 文件说明
 
-- `agentlog.py` — 工具本体(守护进程 + CLI + 各 agent 解析器)。
+- `agentlog.py` — 工具本体(守护进程 + CLI + 各 agent 解析器 + 本地代理)。
+- `agentlog_proxy.py` — 本地路由代理(HTTP 转发 + Q/A 捕获)。
 - `agentlog_gui.py` — 可选的图形界面(窗口 + 系统托盘,复用上面的逻辑)。
 - `agentlog.ico` — 图标文件(托盘 / 窗口标题栏 / 快捷方式使用)。
 - `agents.example.json` — 可选配置模板。
 - `agent_logs/` — 生成的导出文件
+- `capture/` — 本地代理捕获的原始问答(按 agent/日期分文件)
 
 ## 许可证
 

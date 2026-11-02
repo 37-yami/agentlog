@@ -931,12 +931,16 @@ _capture_cache = {}
 def norm_cwd(s):
     """Normalize a working-directory string so the same project always maps
     to the same key regardless of separator style ('E:/a/b' vs 'E:\\a\\b')
-    or a trailing slash. Keep agentlog_proxy.norm_cwd in sync."""
+    or a trailing slash. Platform-aware: POSIX paths keep forward slashes.
+    Keep agentlog_proxy.norm_cwd in sync."""
     if not s:
         return s
-    s = s.replace("/", "\\")
-    s = os.path.normpath(s)
-    return s.rstrip("\\")
+    if os.name == "nt":
+        s = s.replace("/", "\\")
+        s = os.path.normpath(s)
+        return s.rstrip("\\")
+    s = os.path.normpath(s)  # collapses '//' and trailing '/'
+    return s
 
 
 def covered_key(agent, cwd):
@@ -1177,13 +1181,27 @@ _inst_handle = None  # named-mutex handle, kept open for the process lifetime
 
 
 def _acquire_run_lock():
-    """Guarantee a single daemon via a named mutex (Windows). Returns True if
-    we own the instance, False if another agentlog daemon is already running.
+    """Guarantee a single daemon. Returns True if we own the instance,
+    False if another agentlog daemon is already running.
 
-    This is a hard guarantee independent of the pid file, so concurrent
-    launches (e.g. the Startup shortcut firing while `start` runs) can never
-    spin up two daemons, and stale pid files can't cause duplicates either."""
+    Windows: named mutex. POSIX: an fcntl lock on a lock file (held for the
+    process lifetime). This is a hard guarantee independent of the pid file,
+    so concurrent launches can never spin up two daemons, and stale pid
+    files can't cause duplicates either."""
     global _inst_handle
+    if os.name != "nt":
+        try:
+            import fcntl
+            fh = open(os.path.join(HERE, "agentlog.lock"), "w")
+            try:
+                fcntl.lockf(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError:
+                fh.close()
+                return False  # another daemon holds the lock
+            _inst_handle = fh  # keep open; released when the process exits
+            return True
+        except Exception:
+            return True
     try:
         kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
         kernel32.CreateMutexW.argtypes = [ctypes.c_void_p, ctypes.c_bool,
@@ -1251,14 +1269,30 @@ def is_running(pid):
 
 
 def _find_agentlog_pids():
-    """Return pids of python/pythonw processes running the *daemon*
-    (`agentlog.py run`). Only command lines ending in ``agentlog.py run``
-    match, so a concurrent `stop`/`start` invocation, the GUI
-    (agentlog_gui.py) and editors that merely have the file open are never
-    matched; this very process is excluded too. Falls back to the pid-file
-    pid when PowerShell is unavailable."""
+    """Return pids of processes running the *daemon* (`agentlog.py run`).
+    Only command lines ending in ``agentlog.py run`` match, so a concurrent
+    `stop`/`start` invocation, the GUI (agentlog_gui.py) and editors that
+    merely have the file open are never matched; this very process is
+    excluded too. Falls back to the pid-file pid when the platform helper
+    is unavailable."""
     me = os.getpid()
     pids = []
+    if os.name != "nt":
+        # POSIX: pgrep -f matches full command lines and excludes itself.
+        try:
+            rc, out, _ = run_cmd(["pgrep", "-f", r"agentlog\.py run$"])
+            if rc == 0:
+                for tok in out.split():
+                    tok = tok.strip()
+                    if tok.isdigit() and int(tok) != me:
+                        pids.append(int(tok))
+        except Exception:
+            pass
+        if not pids:
+            pid = read_pid()
+            if pid and pid != me and is_running(pid):
+                pids.append(pid)
+        return pids
     try:
         rc, out, _ = run_cmd([
             "powershell", "-NoProfile", "-NonInteractive", "-Command",
@@ -1282,11 +1316,19 @@ def _find_agentlog_pids():
 
 
 def _kill_all_agentlog():
-    """Kill every python/pythonw process whose command line runs the agentlog
-    daemon (`agentlog.py run`). _find_agentlog_pids() already covers the
-    pid-file fallback."""
+    """Kill every process whose command line runs the agentlog daemon
+    (`agentlog.py run`). _find_agentlog_pids() already covers the pid-file
+    fallback."""
     pids = []
     for pid in _find_agentlog_pids():
+        if os.name != "nt":
+            import signal
+            try:
+                os.kill(pid, signal.SIGTERM)
+                pids.append(str(pid))
+            except OSError:
+                pass
+            continue
         subprocess.run(["taskkill", "/PID", str(pid), "/F"],
                        capture_output=True, creationflags=CREATE_NO_WINDOW)
         pids.append(str(pid))
@@ -1323,8 +1365,17 @@ def cmd_start():
     exe = pythonw_exe()
     script = os.path.abspath(__file__)
     log("launching background daemon")
-    subprocess.Popen([exe, script, "run"],
-                     creationflags=0x00000008)  # DETACHED_PROCESS
+    if os.name != "nt":
+        # POSIX: detach via a new session; keep output in the log file so a
+        # terminal-bound launch does not lose daemon messages.
+        logfh = open(LOG_FILE, "a", encoding="utf-8")
+        subprocess.Popen([exe, script, "run"],
+                         stdin=subprocess.DEVNULL, stdout=logfh,
+                         stderr=subprocess.STDOUT,
+                         start_new_session=True, close_fds=True)
+    else:
+        subprocess.Popen([exe, script, "run"],
+                         creationflags=0x00000008)  # DETACHED_PROCESS
     # give it a moment, then record pid via tasklist? We can't easily get pid,
     # so we rely on the run loop writing the pidfile itself.
     time.sleep(1)
@@ -1347,7 +1398,11 @@ def cmd_status():
     pid = read_pid()
     running = is_running(pid)
     print(f"running: {running}" + (f" (pid {pid})" if pid else ""))
-    if sys.platform == "win32" and os.path.exists(startup_lnk_path()):
+    if os.name != "nt":
+        rc = _systemctl_user("is-enabled", "agentlog.service")
+        print("autostart: " + ("enabled (systemd)" if rc == 0
+                               else "disabled (run `install` to enable)"))
+    elif os.path.exists(startup_lnk_path()):
         state = ("BLOCKED (disabled via StartupApproved; re-run install "
                  "or re-tick the GUI checkbox to fix)" if autostart_blocked()
                  else "enabled")
@@ -1537,9 +1592,71 @@ def _del_autostart():
         winreg.DeleteValue(k, "agentlog")
 
 
+SYSTEMD_UNIT_DIR = os.path.expanduser("~/.config/systemd/user")
+SYSTEMD_UNIT_PATH = os.path.join(SYSTEMD_UNIT_DIR, "agentlog.service")
+
+
+def _systemctl_user(*args):
+    """Run `systemctl --user`, making sure the user manager is reachable:
+    non-login shells (plain `wsl bash`) lack XDG_RUNTIME_DIR."""
+    env = dict(os.environ)
+    if not env.get("XDG_RUNTIME_DIR"):
+        d = "/run/user/%d" % os.getuid()
+        if os.path.isdir(d):
+            env["XDG_RUNTIME_DIR"] = d
+    try:
+        return subprocess.run(["systemctl", "--user"] + list(args),
+                              capture_output=True, env=env).returncode
+    except OSError:
+        return -1
+
+
+def _systemd_unit(script, exe):
+    return (
+        "[Unit]\n"
+        "Description=agentlog - capture CLI agent conversations\n"
+        "After=network.target\n"
+        "\n"
+        "[Service]\n"
+        f"ExecStart={exe} {script} run\n"
+        "Restart=on-failure\n"
+        "RestartSec=5\n"
+        "\n"
+        "[Install]\n"
+        "WantedBy=default.target\n"
+    )
+
+
 def cmd_install():
     exe = pythonw_exe()
     script = os.path.abspath(__file__)
+    if os.name != "nt":
+        # POSIX: systemd user service is the autostart channel (works in WSL
+        # when systemd is enabled; enable lingering so it survives a closed
+        # terminal session and starts the user manager when needed).
+        try:
+            os.makedirs(SYSTEMD_UNIT_DIR, exist_ok=True)
+            with open(SYSTEMD_UNIT_PATH, "w", encoding="utf-8") as fh:
+                fh.write(_systemd_unit(script, sys.executable))
+            run_cmd(["loginctl", "enable-linger",
+                     os.environ.get("USER", "") or str(os.getuid())])
+            # First-time linger activation can take seconds before the user
+            # manager answers; wait for it instead of failing silently.
+            for _ in range(20):
+                if _systemctl_user("show-environment") == 0:
+                    break
+                time.sleep(0.5)
+            _systemctl_user("daemon-reload")
+            if _systemctl_user("enable", "--now", "agentlog.service") == 0:
+                print(f"autostart enabled via systemd user service: {SYSTEMD_UNIT_PATH}")
+            else:
+                print("systemd service enabled but start failed; check: "
+                      "systemctl --user status agentlog.service")
+        except Exception as e:
+            print("could not enable systemd service:", e)
+            print("start it manually:  nohup python3 agentlog.py run &")
+        cmd_start()
+        return
     # A .lnk in the per-user Startup folder is the primary autostart channel:
     # it needs no admin and survives most Run-key sweeps by OEM startup
     # managers. The shortcut launches `start` (idempotent).
@@ -1567,6 +1684,18 @@ def cmd_install():
 
 
 def cmd_uninstall():
+    if os.name != "nt":
+        # Stop/disable the service FIRST: its Restart=on-failure would
+        # resurrect a daemon killed by cmd_stop().
+        _systemctl_user("disable", "--now", "agentlog.service")
+        try:
+            os.remove(SYSTEMD_UNIT_PATH)
+            _systemctl_user("daemon-reload")
+            print("systemd user service removed.")
+        except OSError:
+            pass
+        cmd_stop()
+        return
     cmd_stop()
     try:
         os.remove(startup_lnk_path())
@@ -1599,6 +1728,10 @@ def cmd_gui_shortcut():
     """Create a double-click launcher for the GUI: a .lnk that runs
     `pythonw agentlog_gui.py` (no console window) with the agentlog icon.
     Places one next to this repo and one on the Desktop."""
+    if os.name != "nt":
+        print("GUI launcher shortcuts are Windows-only; on Linux run: "
+              "python3 agentlog_gui.py")
+        return
     exe, script = gui_exe_and_script()
     icon = ICON_PATH if os.path.exists(ICON_PATH) else ""
     targets = [os.path.join(HERE, "agentlog-gui.lnk")]

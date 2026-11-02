@@ -290,8 +290,8 @@ class AgentLogGUI:
         file_row1.pack(fill="x")
 
         ttk.Label(file_row1, text="输出格式:").pack(side="left", padx=(0, 4))
-        self.fmt_txt_var = tk.BooleanVar(value=True)
-        self.fmt_md_var = tk.BooleanVar(value=False)
+        self.fmt_txt_var = tk.BooleanVar(value=False)
+        self.fmt_md_var = tk.BooleanVar(value=True)
         self.fmt_json_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(file_row1, text="txt", variable=self.fmt_txt_var,
                         command=self._on_format_change).pack(side="left", padx=2)
@@ -459,7 +459,10 @@ class AgentLogGUI:
         pid = core.read_pid()
         running = core.is_running(pid)
         if running:
-            self.status_var.set(f"状态: 运行中 (pid {pid})")
+            # Routed agents fail when the in-daemon proxy is down, so show
+            # its health next to the daemon status.
+            proxy = "proxy ✓" if core.proxy_alive() else "proxy ✗ (路由的 agent 将无法连接)"
+            self.status_var.set(f"状态: 运行中 (pid {pid}) · {proxy}")
         else:
             self.status_var.set("状态: 已停止")
         self._running = running
@@ -496,7 +499,7 @@ class AgentLogGUI:
             if self.fmt_json_var.get():
                 formats.append("json")
             if not formats:
-                formats = ["txt"]  # default
+                formats = ["md"]  # default
             
             # Check if settings changed - if so, clear state to force regeneration
             settings_changed = (new_thinking != core.INCLUDE_THINKING or 
@@ -997,9 +1000,11 @@ class AgentLogGUI:
         sid_clean = sid[4:] if sid.startswith("ses_") else sid
         sid_short = sid_clean[:8] if len(sid_clean) > 8 else sid_clean
 
-        # Export filenames follow write_export(): path_tail(cwd) + "-" +
-        # sid_short + ".txt/.md/.json" - match that stem exactly.
-        wanted_stem = f"{core.path_tail(cwd)}-{sid_short}"
+        # Export filenames follow write_export(): opencode uses one merged
+        # per-project file (path_tail(cwd) only), other agents use
+        # path_tail(cwd) + "-" + sid_short. Try both stems.
+        tail = core.path_tail(cwd)
+        wanted_stems = (tail, tail + "-" + sid_short)
 
         # Search for matching file in the agent directory
         agent_dir = os.path.join(OUTPUT_ROOT, agent)
@@ -1022,7 +1027,7 @@ class AgentLogGUI:
 
             for fn in sorted(os.listdir(check_dir)):
                 stem, dot, ext = fn.rpartition(".")
-                if dot and ext in ("txt", "md", "json") and stem == wanted_stem:
+                if dot and ext in ("txt", "md", "json") and stem in wanted_stems:
                     full_path = os.path.join(check_dir, fn)
                     try:
                         os.startfile(full_path)

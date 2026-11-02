@@ -124,7 +124,7 @@ python agentlog.py once -f txt md -t
 
 | Argument | Description |
 |----------|-------------|
-| `-f, --format` | Output format(s), can be multiple: `txt` `md` `json` (default: txt) |
+| `-f, --format` | Output format(s), can be multiple: `txt` `md` `json` (default: md) |
 | `-t, --include-thinking` | Include thinking/reasoning content (default: excluded) |
 
 ## GUI

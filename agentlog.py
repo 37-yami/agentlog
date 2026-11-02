@@ -50,7 +50,7 @@ STATE_FILE = os.path.join(HERE, "agentlog.state.json")
 LOG_FILE = os.path.join(HERE, "agentlog.log")
 PID_FILE = os.path.join(HERE, "agentlog.pid")
 # Output formats: list of formats to generate (e.g. ["txt", "md", "json"])
-OUTPUT_FORMATS = ["txt"]
+OUTPUT_FORMATS = ["md"]
 # Include thinking/reasoning content in output (default: False)
 INCLUDE_THINKING = False
 # Subfolder for files with thinking content
@@ -665,6 +665,35 @@ def write_export(agent, cwd, sid, start, msgs, key, mtime, size, state,
     return False
 
 
+_SCRAPE_SID_RE = re.compile(r"^(.+-)([0-9a-f]{8})\.(txt|md|json)$")
+
+
+def _remove_stale_scrape(agent, cwd, sid):
+    # Delete the stale per-session scrape exports of one project that is now
+    # covered by the proxy capture (content lives in the merged capture file).
+    adir = os.path.join(OUTPUT_ROOT, agent)
+    sid_short = (sid[4:] if sid and sid.startswith("ses_") else sid or "")[:8]
+    if not sid_short:
+        return
+    prefix = path_tail(cwd) + "-"
+    for sub in ("", THINKING_DIR):
+        d = os.path.join(adir, sub) if sub else adir
+        if not os.path.isdir(d):
+            continue
+        for fn in os.listdir(d):
+            if not fn.startswith(prefix):
+                continue
+            stem, dot, ext = fn.rpartition(".")
+            if dot and ext in ("txt", "md", "json") \
+                    and stem[len(prefix):] == sid_short \
+                    and _SCRAPE_SID_RE.match(stem):
+                try:
+                    os.remove(os.path.join(d, fn))
+                    log("[cleanup] removed stale scrape " + agent + "/" + fn)
+                except OSError:
+                    pass
+
+
 def process_file(watch, path, state):
     try:
         st = os.stat(path)
@@ -675,6 +704,12 @@ def process_file(watch, path, state):
         cwd, sid, start, msgs = watch["parser"](path)
     except Exception as e:
         log(f"[parse-error] {path}: {e}")
+        state[key] = {"mtime": st.st_mtime, "size": st.st_size, "out": None}
+        return
+    # If the proxy already captures this (agent, project), the scrape export
+    # is suppressed so the two sources never mix or duplicate each other.
+    if covered_key(watch["agent"], cwd) in state.get("_capture_covered", {}):
+        _remove_stale_scrape(watch["agent"], cwd, sid)
         state[key] = {"mtime": st.st_mtime, "size": st.st_size, "out": None}
         return
     write_export(watch["agent"], cwd, sid, start, msgs,
@@ -800,8 +835,9 @@ def ingest_opencode_db(watch, state):
     and (since late-2026 builds) the event-sourced `session_v2` +
     `session_message` tables. We read both; on duplicate session ids
     session_v2 wins since it holds the migrated history plus all newer
-    messages. We keep text parts (user/assistant content) and drop
-    `reasoning` / `tool` / `step-*` parts, matching the other parsers.
+    messages. Messages from all sessions of the same project directory are
+    merged into one export file per project (forked/compacted sessions
+    duplicate their history, so messages are deduped by timestamp+role+text).
     Sub-agent sessions (parent_id) and connectivity probes are skipped."""
     dbp = _opencode_db_path()
     if not dbp:
@@ -832,30 +868,172 @@ def ingest_opencode_db(watch, state):
                 sessions[sid] = [directory, tcreate, tupdate, "v2"]
         except sqlite3.OperationalError:
             pass
-        for sid, (cwd, tcreate, tupdate, src) in \
-                sorted(sessions.items(), key=lambda kv: -(kv[1][2] or kv[1][1] or 0)):
+        # Aggregate messages per project directory: opencode forks/compactions
+        # clone the full history into a new session id, which used to produce
+        # many near-identical per-session files. Export one merged file per
+        # project (deduped by timestamp+role+text); it grows as the
+        # conversation continues in newer sessions.
+        projects = {}
+        for sid, (cwd, tcreate, tupdate, src) in sessions.items():
             if not cwd:
                 continue
+            cwd = norm_cwd(cwd)  # 'E:/a' vs 'E:\\a' must aggregate together
             if src == "v2":
                 msgs = _read_session_v2_messages(con, sid)
             else:
                 msgs = _read_legacy_session_messages(con, sid)
-            key = f"opencode-db:{sid}"
-            mtime = (tupdate or tcreate or 0) / 1000.0
+            if not msgs:
+                continue
             # Skip connectivity probes (e.g. skills that send "Reply with
             # exactly: OK"): exactly one question plus one tiny reply.
             if (len(msgs) == 2 and msgs[0][1] == "user"
                     and msgs[1][1] == "assistant" and len(msgs[1][2]) <= 30):
-                state[key] = {"mtime": mtime, "size": len(msgs), "out": None}
                 continue
-            write_export(agent, cwd, sid, parse_ts(tcreate), msgs,
-                         key, mtime, len(msgs), state,
+            p = projects.setdefault(cwd, {"msgs": [], "tupdate": 0, "tcreate": None})
+            p["msgs"].extend(msgs)
+            p["tupdate"] = max(p["tupdate"], tupdate or tcreate or 0)
+            if tcreate and (p["tcreate"] is None or tcreate < p["tcreate"]):
+                p["tcreate"] = tcreate
+        for cwd, p in projects.items():
+            # proxy capture takes precedence for covered projects
+            if covered_key(agent, cwd) in state.get("_capture_covered", {}):
+                continue
+            # Dedupe messages copied into forked/compacted sessions, then
+            # order chronologically.
+            seen = set()
+            uniq = []
+            for ts, role, text, thinking in p["msgs"]:
+                k = (ts, role, text)
+                if k in seen:
+                    continue
+                seen.add(k)
+                uniq.append((ts, role, text, thinking))
+            uniq.sort(key=lambda m: (m[0] is None, m[0]))
+            key = f"opencode-db:dir:{cwd}"
+            mtime = p["tupdate"] / 1000.0
+            write_export(agent, cwd, None, parse_ts(p["tcreate"]), uniq,
+                         key, mtime, len(uniq), state,
                          include_thinking=INCLUDE_THINKING, output_formats=OUTPUT_FORMATS)
     finally:
         con.close()
 
 
+# --------------------------------------------------------------------------
+# Proxy capture ingestion (normalized Q/A turns written by agentlog_proxy)
+# --------------------------------------------------------------------------
+CAPTURE_DIR = os.path.join(HERE, "capture")
+PROXY_PORT = int(os.environ.get("AGENTLOG_PROXY_PORT", "8765"))
+# "minor" turns are background/utility calls (no tools, tiny context) that
+# the CLI fires on its own; they are not real conversation turns.
+_capture_cache = {}
+
+
+def norm_cwd(s):
+    """Normalize a working-directory string so the same project always maps
+    to the same key regardless of separator style ('E:/a/b' vs 'E:\\a\\b')
+    or a trailing slash. Keep agentlog_proxy.norm_cwd in sync."""
+    if not s:
+        return s
+    s = s.replace("/", "\\")
+    s = os.path.normpath(s)
+    return s.rstrip("\\")
+
+
+def covered_key(agent, cwd):
+    """State key deciding whether the proxy capture suppresses the legacy
+    scrape for one (agent, project). Case-insensitive: Windows paths."""
+    return (agent + "|" + norm_cwd(cwd or "")).lower()
+
+
+def proxy_alive(timeout=0.5):
+    """True when the local routing proxy answers on its port."""
+    import socket
+    try:
+        with socket.create_connection(("127.0.0.1", PROXY_PORT), timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+
+def ingest_capture(state):
+    if not os.path.isdir(CAPTURE_DIR):
+        # Capture data gone entirely -> no project is covered any more and
+        # the legacy scrape resumes everywhere.
+        state.pop("_capture_covered", None)
+        return
+    # Pass 1: parse every daily file per agent (cached), aggregating ALL days
+    # of the same (agent, cwd) together - a conversation spanning several
+    # days must end up in ONE export, not overwrite itself day by day.
+    agg = {}   # covered_key -> {"agent","cwd","msgs","n","mtime"}
+    for agent_name in sorted(os.listdir(CAPTURE_DIR)):
+        adir = os.path.join(CAPTURE_DIR, agent_name)
+        if not os.path.isdir(adir):
+            continue
+        for fn in sorted(os.listdir(adir)):
+            if not fn.endswith(".jsonl"):
+                continue
+            full = os.path.join(adir, fn)
+            try:
+                st = os.stat(full)
+            except OSError:
+                continue
+            cached = _capture_cache.get(full)
+            if cached and cached[0] == st.st_size and cached[1] == st.st_mtime:
+                groups = cached[2]
+            else:
+                groups = {}
+                try:
+                    with open(full, encoding="utf-8") as fh:
+                        for line in fh:
+                            try:
+                                ev = json.loads(line)
+                            except Exception:
+                                continue
+                            if ev.get("minor"):
+                                continue
+                            cwd = norm_cwd(ev.get("cwd")) or "(unknown)"
+                            ts = parse_ts(ev.get("ts"))
+                            if ts is None:
+                                continue
+                            g = groups.setdefault(cwd, {"msgs": [], "n": 0})
+                            u = (ev.get("user") or "").strip()
+                            a = (ev.get("assistant") or "").strip()
+                            if u:
+                                g["msgs"].append((ts, "user", u, ""))
+                            if a:
+                                g["msgs"].append((ts, "assistant", a, ""))
+                            g["n"] += 1
+                except OSError:
+                    continue
+                _capture_cache[full] = (st.st_size, st.st_mtime, groups)
+            for cwd, g in groups.items():
+                if not g["msgs"]:
+                    continue
+                ck = covered_key(agent_name, cwd)
+                p = agg.setdefault(ck, {"agent": agent_name, "cwd": cwd,
+                                        "msgs": [], "n": 0, "mtime": 0.0})
+                p["msgs"].extend(g["msgs"])
+                p["n"] += g["n"]
+                p["mtime"] = max(p["mtime"], st.st_mtime)
+    # Pass 2: rebuild the covered set from what capture data actually shows
+    # (stale markers disappear automatically once data is deleted).
+    state["_capture_covered"] = {ck: True for ck in agg}
+    # Pass 3: one merged export per (agent, cwd).
+    for ck, p in agg.items():
+        if not p["msgs"] or p["n"] == 0:
+            continue
+        msgs = sorted(p["msgs"], key=lambda m: (m[0] is None, m[0]))
+        write_export(p["agent"], p["cwd"], None, msgs[0][0], msgs,
+                     "capture:" + ck, p["mtime"], p["n"], state,
+                     include_thinking=INCLUDE_THINKING,
+                     output_formats=OUTPUT_FORMATS)
+
+
 def scan_once(state):
+    try:
+        ingest_capture(state)
+    except Exception as e:
+        log(f"[capture error] {e}")
     for watch in AGENTS:
         if watch.get("source") == "opencode_db":
             try:
@@ -904,8 +1082,30 @@ def save_state(state):
 # --------------------------------------------------------------------------
 # Daemon loop
 # --------------------------------------------------------------------------
+def start_proxy_thread():
+    # Local routing proxy: agents point their API endpoint at
+    # http://127.0.0.1:<PROXY_PORT>/<agent>[/<upstream-host>]/ and every Q/A
+    # turn is captured at request time into capture/<agent>/<YYYYMMDD>.jsonl.
+    import threading
+    if os.environ.get("AGENTLOG_PROXY", "1") == "0":
+        return
+    try:
+        import agentlog_proxy
+    except Exception as e:
+        log(f"[proxy] import failed: {e}")
+        return
+    def _run():
+        try:
+            agentlog_proxy.serve()
+        except Exception as e:
+            log(f"[proxy] stopped: {e}")
+    threading.Thread(target=_run, daemon=True).start()
+    log(f"[proxy] listening on http://127.0.0.1:{PROXY_PORT}")
+
+
 def run_loop():
     log("daemon started")
+    start_proxy_thread()
     state = load_state()
     try:
         while True:
@@ -1152,6 +1352,13 @@ def cmd_status():
                  "or re-tick the GUI checkbox to fix)" if autostart_blocked()
                  else "enabled")
         print(f"autostart: {state}")
+    # A routed agent cannot reach its API when the proxy is down, so surface
+    # proxy health right next to the daemon status.
+    if running:
+        if proxy_alive():
+            print(f"proxy: listening on http://127.0.0.1:{PROXY_PORT}")
+        else:
+            print("proxy: NOT responding (routed agents will fail!)")
     print(f"log: {LOG_FILE}")
     print(f"state: {STATE_FILE}")
 
@@ -1445,6 +1652,41 @@ def cmd_build_icon(src):
     build_icon(src)
 
 
+def cmd_route():
+    """Print per-agent configuration to route API traffic through the
+    local proxy. Routed agents are captured at request time; their legacy
+    file/database scrape is suppressed per project."""
+    print("Point each agent's API endpoint at the local proxy (runs inside the")
+    print("agentlog daemon). Turns are captured at request time into")
+    print("capture/<agent>/<YYYYMMDD>.jsonl and exported per project as usual.")
+    print()
+    print("claude    setx ANTHROPIC_BASE_URL http://127.0.0.1:%d/claude" % PROXY_PORT)
+    print("          (custom relay: append /<relay-host>, e.g. .../claude/relay.example.com)")
+    print("          then restart the terminal so the variable takes effect")
+    print()
+    print("opencode  in ~/.config/opencode/opencode.json set the provider baseURL to")
+    print("          http://127.0.0.1:%d/opencode/<provider-host>" % PROXY_PORT)
+    print("          e.g. .../opencode/api.deepseek.com for deepseek")
+    print()
+    print("codebuddy point its endpoint/base-url config to")
+    print("          http://127.0.0.1:%d/codebuddy/<endpoint-host>" % PROXY_PORT)
+    print()
+    print("The proxy understands Anthropic (/v1/messages) and OpenAI-compatible")
+    print("(/v1/chat/completions) protocols; other paths are forwarded untouched.")
+    print()
+    print("Notes:")
+    print("- IMPORTANT: a routed agent needs the daemon (and its proxy) alive.")
+    print("  If agentlog is stopped, routed agents cannot reach their API.")
+    print("  Check with: python agentlog.py status  (proxy line).")
+    print("- The project path comes from the agent's system prompt. Claude Code")
+    print("  states it reliably. opencode/codebuddy may not - for those the")
+    print("  legacy database/JSONL scrape (which knows the project natively)")
+    print("  is the better capture channel and needs no routing at all.")
+    print("- Unrouting an agent (removing the baseURL) and deleting capture/ is")
+    print("  enough to fall back to the scrape everywhere.")
+    print("- Set AGENTLOG_PROXY=0 to disable the proxy thread.")
+
+
 def main():
     _detach_streams()
     global INCLUDE_THINKING, OUTPUT_FORMATS
@@ -1452,13 +1694,13 @@ def main():
     ap.add_argument("action", nargs="?", default="once",
                     choices=["run", "once", "start", "stop",
                              "status", "install", "uninstall",
-                             "gui-shortcut", "build-icon"])
+                             "gui-shortcut", "build-icon", "route"])
     ap.add_argument("path", nargs="?", default="")
     ap.add_argument("-t", "--include-thinking", action="store_true",
                     help="Include thinking/reasoning content in output")
     ap.add_argument("-f", "--format", nargs="+", choices=["txt", "md", "json"],
-                    default=["txt"],
-                    help="Output format(s): txt (default), md, json. "
+                    default=["md"],
+                    help="Output format(s): md (default), txt, json. "
                          "Multiple formats can be specified.")
     args = ap.parse_args()
     
@@ -1491,6 +1733,8 @@ def main():
         cmd_gui_shortcut()
     elif args.action == "build-icon":
         cmd_build_icon(args.path)
+    elif args.action == "route":
+        cmd_route()
 
 
 if __name__ == "__main__":

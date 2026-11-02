@@ -113,7 +113,7 @@ python agentlog.py once -f txt md -t
 
 | 参数 | 说明 |
 |------|------|
-| `-f, --format` | 输出格式,可多选: `txt` `md` `json`(默认: txt) |
+| `-f, --format` | 输出格式,可多选: `txt` `md` `json`(默认: md) |
 | `-t, --include-thinking` | 包含思考/推理内容(默认: 不包含) |
 
 ## 图形界面(GUI)

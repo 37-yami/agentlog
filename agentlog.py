@@ -224,12 +224,37 @@ def resolve_cwd(raw, folder):
 
 # --------------------------------------------------------------------------
 # Per-agent parsers
-# Each returns (cwd, session_id, start_dt, [(beijing_dt, role, text), ...])
+# Each returns (cwd, session_id, title, start_dt, [(beijing_dt, role, text, thinking), ...])
+# `title` is the agent-generated conversation title when the transcript
+# carries one (ai-title / session.title); None otherwise - the grouping
+# layer then falls back to the first user message.
 # --------------------------------------------------------------------------
+def clean_title(s, limit=40):
+    """Make a conversation title safe (and short enough) for a filename."""
+    if not s:
+        return ""
+    s = re.sub(r"\s+", " ", str(s)).strip()
+    s = re.sub(r'[\\/:*?"<>|\r\n\t]', " ", s).strip()
+    return s[:limit].rstrip(" -.")
+
+
+def first_user_title(msgs, limit=40):
+    """Fallback group title: the beginning of the first real user message.
+    Forked/resumed sessions copy the history, so their first user message
+    matches the original and they merge into one group. Lines starting with
+    '<' are agent/system injections (<local-command-caveat>, attachments),
+    not user prose."""
+    for _dt, role, text, _th in msgs:
+        if role == "user" and text and not text.lstrip().startswith("<"):
+            return clean_title(text, limit)
+    return ""
+
+
 def parse_codebuddy(path):
     folder = os.path.basename(os.path.dirname(path))
     raw_cwd = None
     sid = None
+    title = None
     start = None
     raw = []  # (kind, text, thinking, dt)  kind in {user, assistant, tool}
     with open(path, encoding="utf-8", errors="replace") as fh:
@@ -243,6 +268,9 @@ def parse_codebuddy(path):
                 continue
             t = o.get("type")
             if t == "reasoning":          # thinking -> skip
+                continue
+            if t == "ai-title":           # agent-generated conversation title
+                title = title or o.get("aiTitle")
                 continue
             if t == "message":
                 role = o.get("role")
@@ -278,13 +306,14 @@ def parse_codebuddy(path):
         if not text and not thinking:
             continue
         msgs.append((dt, kind, text, thinking))
-    return resolve_cwd(raw_cwd, folder), sid, start, msgs
+    return resolve_cwd(raw_cwd, folder), sid, title, start, msgs
 
 
 def parse_pi(path):
     folder = os.path.basename(os.path.dirname(path))
     raw_cwd = None
     sid = None
+    title = None
     start = None
     msgs = []
     with open(path, encoding="utf-8", errors="replace") as fh:
@@ -300,6 +329,7 @@ def parse_pi(path):
             if t == "session":
                 raw_cwd = o.get("cwd")
                 sid = o.get("id")
+                title = title or o.get("title")
                 start = parse_ts(o.get("timestamp"))
                 continue
             if t in ("thinking_level_change", "model_change"):
@@ -315,7 +345,7 @@ def parse_pi(path):
                 if not text and not thinking:
                     continue
                 msgs.append((parse_ts(o.get("timestamp")), role, text, thinking))
-    return resolve_cwd(raw_cwd, folder), sid, start, msgs
+    return resolve_cwd(raw_cwd, folder), sid, title, start, msgs
 
 
 def parse_claude(path):
@@ -340,6 +370,10 @@ def parse_claude(path):
             start = start or parse_ts(o.get("timestamp"))
             if t not in ("user", "assistant"):
                 continue
+            # isMeta marks system-injected user lines (<local-command-caveat>,
+            # <ide_opened_file> etc.) - not real conversation turns.
+            if o.get("isMeta"):
+                continue
             msg = o.get("message") or {}
             role = msg.get("role") or o.get("role")
             if role not in ("user", "assistant"):
@@ -348,13 +382,14 @@ def parse_claude(path):
             if not text and not thinking:
                 continue
             msgs.append((parse_ts(o.get("timestamp")), role, text, thinking))
-    return resolve_cwd(raw_cwd, folder), sid, start, msgs
+    return resolve_cwd(raw_cwd, folder), sid, None, start, msgs
 
 
 def parse_opencode(path):
     folder = os.path.basename(os.path.dirname(path))
     raw_cwd = None
     sid = None
+    title = None
     start = None
     msgs = []
     name = os.path.basename(path)
@@ -373,6 +408,7 @@ def parse_opencode(path):
             sid = sid or o.get("id") or o.get("sessionId")
             start = start or parse_ts(o.get("timestamp") or o.get("createdAt"))
             if t == "session" or t == "conversation":
+                title = title or o.get("title")
                 continue
             msg = o.get("message") or {}
             role = o.get("role") or msg.get("role")
@@ -383,7 +419,7 @@ def parse_opencode(path):
                 if not text and not thinking:
                     continue
                 msgs.append((parse_ts(o.get("timestamp")), role, text, thinking))
-    return resolve_cwd(raw_cwd, folder), sid, start, msgs
+    return resolve_cwd(raw_cwd, folder), sid, title, start, msgs
 
 
 def parse_generic(path):
@@ -417,7 +453,7 @@ def parse_generic(path):
                 if not text and not thinking:
                     continue
                 msgs.append((parse_ts(o.get("timestamp") or msg.get("timestamp")), role, text, thinking))
-    return resolve_cwd(raw_cwd, folder), sid, start, msgs
+    return resolve_cwd(raw_cwd, folder), sid, None, start, msgs
 
 
 # --------------------------------------------------------------------------
@@ -599,9 +635,11 @@ def exports_fallback(agent):
 
 
 def write_export(agent, cwd, sid, start, msgs, key, mtime, size, state,
-                 include_thinking=False, output_formats=None):
+                 include_thinking=False, output_formats=None, title=None):
     """Dedupe + render + write one conversation export. Shared by the file
-    parser and the opencode SQLite ingestion."""
+    parser and the opencode SQLite ingestion. `title` (already cleaned) is
+    appended to the filename so each conversation group of one project gets
+    its own file."""
     if output_formats is None:
         output_formats = OUTPUT_FORMATS
 
@@ -626,7 +664,11 @@ def write_export(agent, cwd, sid, start, msgs, key, mtime, size, state,
     # Generate files for each format
     ext_map = {"txt": ".txt", "md": ".md", "json": ".json"}
     base_name = path_tail(cwd)
-    # Add short session ID to filename for uniqueness (remove ses_ prefix)
+    # Conversation-group title names the file (one file per conversation of
+    # one project); the short session id keeps legacy per-session exports
+    # unique (remove ses_ prefix).
+    if title:
+        base_name = f"{base_name}-{title}"
     if sid:
         # Remove ses_ prefix if present
         sid_clean = sid[4:] if sid.startswith("ses_") else sid
@@ -665,56 +707,101 @@ def write_export(agent, cwd, sid, start, msgs, key, mtime, size, state,
     return False
 
 
-_SCRAPE_SID_RE = re.compile(r"^(.+-)([0-9a-f]{8})\.(txt|md|json)$")
+_EXPORT_EXTS = ("txt", "md", "json")
 
 
-def _remove_stale_scrape(agent, cwd, sid):
-    # Delete the stale per-session scrape exports of one project that is now
-    # covered by the proxy capture (content lives in the merged capture file).
+def _cleanup_exports(agent, cwd, keep_stems):
+    """Remove this project's export files whose stem is not in keep_stems
+    (old per-session files, previous untitled merges, or everything when the
+    proxy capture covers the project and keep_stems is empty)."""
     adir = os.path.join(OUTPUT_ROOT, agent)
-    sid_short = (sid[4:] if sid and sid.startswith("ses_") else sid or "")[:8]
-    if not sid_short:
-        return
-    prefix = path_tail(cwd) + "-"
+    prefix = path_tail(cwd)
     for sub in ("", THINKING_DIR):
         d = os.path.join(adir, sub) if sub else adir
         if not os.path.isdir(d):
             continue
         for fn in os.listdir(d):
-            if not fn.startswith(prefix):
-                continue
             stem, dot, ext = fn.rpartition(".")
-            if dot and ext in ("txt", "md", "json") \
-                    and stem[len(prefix):] == sid_short \
-                    and _SCRAPE_SID_RE.match(stem):
-                try:
-                    os.remove(os.path.join(d, fn))
-                    log("[cleanup] removed stale scrape " + agent + "/" + fn)
-                except OSError:
-                    pass
+            if not dot or ext not in _EXPORT_EXTS:
+                continue
+            if stem in keep_stems:
+                continue
+            if stem != prefix and not stem.startswith(prefix + "-"):
+                continue  # belongs to a different project
+            try:
+                os.remove(os.path.join(d, fn))
+                log("[cleanup] removed old export " + agent + "/" + fn)
+            except OSError:
+                pass
 
 
-def process_file(watch, path, state):
-    try:
-        st = os.stat(path)
-    except OSError:
-        return
-    key = os.path.abspath(path)
-    try:
-        cwd, sid, start, msgs = watch["parser"](path)
-    except Exception as e:
-        log(f"[parse-error] {path}: {e}")
-        state[key] = {"mtime": st.st_mtime, "size": st.st_size, "out": None}
-        return
-    # If the proxy already captures this (agent, project), the scrape export
-    # is suppressed so the two sources never mix or duplicate each other.
-    if covered_key(watch["agent"], cwd) in state.get("_capture_covered", {}):
-        _remove_stale_scrape(watch["agent"], cwd, sid)
-        state[key] = {"mtime": st.st_mtime, "size": st.st_size, "out": None}
-        return
-    write_export(watch["agent"], cwd, sid, start, msgs,
-                 key, st.st_mtime, st.st_size, state,
-                 include_thinking=INCLUDE_THINKING, output_formats=OUTPUT_FORMATS)
+def ingest_jsonl_agent(watch, state):
+    """Scrape one agent's JSONL transcripts, merged per conversation group.
+
+    Sessions are aggregated by (project, group title): agent-generated titles
+    (codebuddy ai-title / pi session title) group directly; otherwise the
+    first user message groups them, which also folds forked/resumed sessions
+    (they copy the history, so their first user message matches). Fork-suffixed
+    opencode-style titles are stripped by the caller-side DB ingestion; here
+    the raw title is used as-is."""
+    agent = watch["agent"]
+    groups = {}   # (cwd, title) -> {"msgs", "start", "mtime"}
+    for pattern in watch["globs"]:
+        for path in glob.glob(pattern, recursive=True):
+            parts = path.replace("\\", "/").split("/")
+            if any(p in IGNORE_DIR_PARTS for p in parts):
+                continue
+            try:
+                st = os.stat(path)
+            except OSError:
+                continue
+            try:
+                cwd, sid, title, start, msgs = watch["parser"](path)
+            except Exception as e:
+                log(f"[parse-error] {path}: {e}")
+                continue
+            cwd = norm_cwd(cwd)
+            if not cwd or not msgs:
+                continue
+            # Skip connectivity probes (same rule as the opencode ingestion).
+            if (len(msgs) == 2 and msgs[0][1] == "user"
+                    and msgs[1][1] == "assistant" and len(msgs[1][2]) <= 30):
+                continue
+            title = clean_title(title) or first_user_title(msgs)
+            if not title:
+                continue
+            g = groups.setdefault((cwd, title),
+                                  {"msgs": [], "start": None, "mtime": 0.0})
+            g["msgs"].extend(msgs)
+            if g["start"] is None:
+                g["start"] = start
+            g["mtime"] = max(g["mtime"], st.st_mtime)
+    # Export one merged file per conversation group.
+    keep = {}   # cwd -> set of stems still valid
+    for (cwd, title), g in groups.items():
+        # The proxy capture is authoritative for covered projects.
+        if covered_key(agent, cwd) in state.get("_capture_covered", {}):
+            continue
+        seen = set()
+        uniq = []
+        for m in g["msgs"]:
+            k = (m[0], m[1], m[2])
+            if k in seen:
+                continue
+            seen.add(k)
+            uniq.append(m)
+        uniq.sort(key=lambda m: (m[0] is None, m[0]))
+        key = f"{agent}:grp:{cwd}|{title}"
+        stem = f"{path_tail(cwd)}-{title}"
+        write_export(agent, cwd, None, g["start"], uniq, key,
+                     g["mtime"], len(uniq), state, title=title,
+                     include_thinking=INCLUDE_THINKING,
+                     output_formats=OUTPUT_FORMATS)
+        keep.setdefault(cwd, set()).add(stem)
+    # Drop superseded files (per-session exports, older merges, or everything
+    # when the capture covers the project).
+    for cwd in {c for (c, _t) in groups}:
+        _cleanup_exports(agent, cwd, keep.get(cwd, set()))
 
 
 def _opencode_db_path():
@@ -828,6 +915,9 @@ def _read_session_v2_messages(con, sid):
     return msgs
 
 
+_FORK_SUFFIX_RE = re.compile(r"\s*\(fork\s*#\d+\)\s*$")
+
+
 def ingest_opencode_db(watch, state):
     """opencode (newer versions) stores sessions in a SQLite database rather
     than JSONL. Each session row has a `directory` (the project cwd). Two
@@ -852,29 +942,30 @@ def ingest_opencode_db(watch, state):
         cur = con.cursor()
         # Sub-agent sessions (parent_id set, e.g. @explore tasks) are internal
         # chatter - the task prompt shows up as a fake "user" message - so only
-        # top-level sessions are exported. sid -> [directory, tcreate, tupdate, src]
+        # top-level sessions are exported. sid -> [directory, title, tcreate, tupdate, src]
         sessions = {}
         try:
-            cur.execute("SELECT id, directory, time_created, time_updated "
+            cur.execute("SELECT id, directory, title, time_created, time_updated "
                         "FROM session WHERE parent_id IS NULL")
-            for sid, directory, tcreate, tupdate in cur.fetchall():
-                sessions[sid] = [directory, tcreate, tupdate, "legacy"]
+            for sid, directory, title, tcreate, tupdate in cur.fetchall():
+                sessions[sid] = [directory, title, tcreate, tupdate, "legacy"]
         except sqlite3.OperationalError as e:
             log(f"[opencode-db] legacy session table unavailable: {e}")
         try:
-            cur.execute("SELECT id, directory, time_created, time_updated "
+            cur.execute("SELECT id, directory, title, time_created, time_updated "
                         "FROM session_v2 WHERE parent_id IS NULL")
-            for sid, directory, tcreate, tupdate in cur.fetchall():
-                sessions[sid] = [directory, tcreate, tupdate, "v2"]
+            for sid, directory, title, tcreate, tupdate in cur.fetchall():
+                sessions[sid] = [directory, title, tcreate, tupdate, "v2"]
         except sqlite3.OperationalError:
             pass
-        # Aggregate messages per project directory: opencode forks/compactions
-        # clone the full history into a new session id, which used to produce
-        # many near-identical per-session files. Export one merged file per
-        # project (deduped by timestamp+role+text); it grows as the
-        # conversation continues in newer sessions.
-        projects = {}
-        for sid, (cwd, tcreate, tupdate, src) in sessions.items():
+        # Aggregate per (project, conversation): opencode's UI lets one project
+        # run several parallel conversations (browser-like tabs), each with its
+        # own title, while forks/compactions clone the history under a new
+        # session id with the SAME title (plus a "(fork #N)" suffix). Grouping
+        # by the suffix-stripped title therefore merges exactly one
+        # conversation and keeps parallel tabs as separate exports.
+        groups = {}
+        for sid, (cwd, title, tcreate, tupdate, src) in sessions.items():
             if not cwd:
                 continue
             cwd = norm_cwd(cwd)  # 'E:/a' vs 'E:\\a' must aggregate together
@@ -889,12 +980,18 @@ def ingest_opencode_db(watch, state):
             if (len(msgs) == 2 and msgs[0][1] == "user"
                     and msgs[1][1] == "assistant" and len(msgs[1][2]) <= 30):
                 continue
-            p = projects.setdefault(cwd, {"msgs": [], "tupdate": 0, "tcreate": None})
-            p["msgs"].extend(msgs)
-            p["tupdate"] = max(p["tupdate"], tupdate or tcreate or 0)
-            if tcreate and (p["tcreate"] is None or tcreate < p["tcreate"]):
-                p["tcreate"] = tcreate
-        for cwd, p in projects.items():
+            base_title = _FORK_SUFFIX_RE.sub("", (title or "").strip())
+            gtitle = clean_title(base_title) or first_user_title(msgs)
+            if not gtitle:
+                continue
+            g = groups.setdefault((cwd, gtitle),
+                                  {"msgs": [], "tupdate": 0, "tcreate": None})
+            g["msgs"].extend(msgs)
+            g["tupdate"] = max(g["tupdate"], tupdate or tcreate or 0)
+            if tcreate and (g["tcreate"] is None or tcreate < g["tcreate"]):
+                g["tcreate"] = tcreate
+        keep = {}
+        for (cwd, gtitle), g in groups.items():
             # proxy capture takes precedence for covered projects
             if covered_key(agent, cwd) in state.get("_capture_covered", {}):
                 continue
@@ -902,18 +999,22 @@ def ingest_opencode_db(watch, state):
             # order chronologically.
             seen = set()
             uniq = []
-            for ts, role, text, thinking in p["msgs"]:
+            for ts, role, text, thinking in g["msgs"]:
                 k = (ts, role, text)
                 if k in seen:
                     continue
                 seen.add(k)
                 uniq.append((ts, role, text, thinking))
             uniq.sort(key=lambda m: (m[0] is None, m[0]))
-            key = f"opencode-db:dir:{cwd}"
-            mtime = p["tupdate"] / 1000.0
-            write_export(agent, cwd, None, parse_ts(p["tcreate"]), uniq,
-                         key, mtime, len(uniq), state,
-                         include_thinking=INCLUDE_THINKING, output_formats=OUTPUT_FORMATS)
+            key = f"opencode-db:grp:{cwd}|{gtitle}"
+            mtime = g["tupdate"] / 1000.0
+            write_export(agent, cwd, None, parse_ts(g["tcreate"]), uniq,
+                         key, mtime, len(uniq), state, title=gtitle,
+                         include_thinking=INCLUDE_THINKING,
+                         output_formats=OUTPUT_FORMATS)
+            keep.setdefault(cwd, set()).add(f"{path_tail(cwd)}-{gtitle}")
+        for cwd in {c for (c, _t) in groups}:
+            _cleanup_exports(agent, cwd, keep.get(cwd, set()))
     finally:
         con.close()
 
@@ -1044,15 +1145,11 @@ def scan_once(state):
                 ingest_opencode_db(watch, state)
             except Exception as e:
                 log(f"[opencode-db error] {e}")
-        for pattern in watch["globs"]:
-            for path in glob.glob(pattern, recursive=True):
-                parts = path.replace("\\", "/").split("/")
-                if any(p in IGNORE_DIR_PARTS for p in parts):
-                    continue
-                try:
-                    process_file(watch, path, state)
-                except Exception as e:
-                    log(f"[error] {path}: {e}")
+            continue
+        try:
+            ingest_jsonl_agent(watch, state)
+        except Exception as e:
+            log(f"[error] {watch['agent']}: {e}")
 
 
 # --------------------------------------------------------------------------

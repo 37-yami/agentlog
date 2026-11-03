@@ -398,20 +398,22 @@ class AgentLogGUI:
         ttk.Button(sess_filter_frame, text="搜索", command=self._refresh_sessions).pack(
             side="left", padx=(0, 4))
 
-        sess_cols = ("agent", "project", "session_id", "start_time", "update_time", "msg_count")
+        sess_cols = ("agent", "project", "title", "session_id", "start_time", "update_time", "msg_count")
         self.session_tree = ttk.Treeview(session_tab, columns=sess_cols, show="headings",
                                          padding=10, selectmode="browse")
         self.session_tree.heading("agent", text="Agent", command=lambda: self._sort_session_tree("agent"))
         self.session_tree.heading("project", text="项目路径", command=lambda: self._sort_session_tree("project"))
+        self.session_tree.heading("title", text="标题", command=lambda: self._sort_session_tree("title"))
         self.session_tree.heading("session_id", text="Session ID", command=lambda: self._sort_session_tree("session_id"))
         self.session_tree.heading("start_time", text="开始时间", command=lambda: self._sort_session_tree("start_time"))
         self.session_tree.heading("update_time", text="最后更新 ↓", command=lambda: self._sort_session_tree("update_time"))
         self.session_tree.heading("msg_count", text="消息数", command=lambda: self._sort_session_tree("msg_count"))
-        self.session_tree.column("agent", width=80, minwidth=60, stretch=False)
-        self.session_tree.column("project", width=200, minwidth=100, stretch=True)
-        self.session_tree.column("session_id", width=100, minwidth=80, stretch=False)
-        self.session_tree.column("start_time", width=120, minwidth=100, stretch=False)
-        self.session_tree.column("update_time", width=120, minwidth=100, stretch=False)
+        self.session_tree.column("agent", width=70, minwidth=60, stretch=False)
+        self.session_tree.column("project", width=180, minwidth=100, stretch=True)
+        self.session_tree.column("title", width=160, minwidth=80, stretch=True)
+        self.session_tree.column("session_id", width=90, minwidth=70, stretch=False)
+        self.session_tree.column("start_time", width=115, minwidth=100, stretch=False)
+        self.session_tree.column("update_time", width=115, minwidth=100, stretch=False)
         self.session_tree.column("msg_count", width=60, minwidth=50, stretch=False)
 
         self._sess_sort_col = "update_time"
@@ -577,7 +579,8 @@ class AgentLogGUI:
             self._sess_sort_reverse = False
         
         # Update heading arrows
-        for c in ("agent", "project", "session_id", "start_time", "update_time", "msg_count"):
+        for c in ("agent", "project", "title", "session_id", "start_time",
+                  "update_time", "msg_count"):
             text = self.session_tree.heading(c)["text"].rstrip(" ↓↑")
             if c == col:
                 text += " ↑" if not self._sess_sort_reverse else " ↓"
@@ -588,8 +591,8 @@ class AgentLogGUI:
         for item in self.session_tree.get_children():
             tags = self.session_tree.item(item, "tags")
             vals = self.session_tree.item(item, "values")
-            idx = {"agent": 0, "project": 1, "session_id": 2, 
-                   "start_time": 3, "update_time": 4, "msg_count": 5}.get(col, 0)
+            idx = {"agent": 0, "project": 1, "title": 2, "session_id": 3,
+                   "start_time": 4, "update_time": 5, "msg_count": 6}.get(col, 0)
             val = vals[idx] if idx < len(vals) else ""
             # msg_count is numeric - sort numerically, not as text
             # ("10" must not sort before "9").
@@ -817,37 +820,41 @@ class AgentLogGUI:
                 import sqlite3
                 con = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
                 cur = con.cursor()
-                # sid -> (directory, tcreate, tupdate, source); session_v2 wins
+                # sid -> (directory, title, tcreate, tupdate, source); session_v2 wins
                 db_sessions = {}
                 try:
                     cur.execute("""
-                        SELECT id, directory, time_created, time_updated
+                        SELECT id, directory, title, time_created, time_updated
                         FROM session_v2
                         WHERE directory IS NOT NULL AND parent_id IS NULL
                     """)
-                    for sid, directory, tcreate, tupdate in cur.fetchall():
-                        db_sessions[sid] = (directory, tcreate, tupdate, "v2")
+                    for sid, directory, title, tcreate, tupdate in cur.fetchall():
+                        db_sessions[sid] = (directory, title, tcreate, tupdate, "v2")
                 except sqlite3.OperationalError:
                     pass
                 try:
                     cur.execute("""
-                        SELECT id, directory, time_created, time_updated
+                        SELECT id, directory, title, time_created, time_updated
                         FROM session
                         WHERE directory IS NOT NULL AND parent_id IS NULL
                     """)
-                    for sid, directory, tcreate, tupdate in cur.fetchall():
+                    for sid, directory, title, tcreate, tupdate in cur.fetchall():
                         if sid not in db_sessions:
-                            db_sessions[sid] = (directory, tcreate, tupdate, "legacy")
+                            db_sessions[sid] = (directory, title, tcreate, tupdate, "legacy")
                 except sqlite3.OperationalError:
                     pass
 
-                for sid, (directory, tcreate, tupdate, src) in \
-                        sorted(db_sessions.items(), key=lambda kv: -(kv[1][2] or kv[1][1] or 0)):
+                for sid, (directory, title, tcreate, tupdate, src) in \
+                        sorted(db_sessions.items(), key=lambda kv: -(kv[1][3] or kv[1][2] or 0)):
                     if not directory:
                         continue
                     # Format session ID (short version, remove ses_ prefix)
                     sid_clean = sid[4:] if sid.startswith("ses_") else sid
                     sid_short = sid_clean[:8] if len(sid_clean) > 8 else sid_clean
+
+                    # Conversation title (fork suffix stripped, like the export)
+                    conv_title = core.clean_title(
+                        core._FORK_SUFFIX_RE.sub("", (title or "").strip()))
 
                     # Full project path (shown + used to find the export)
                     project = directory
@@ -883,7 +890,8 @@ class AgentLogGUI:
                             search_key not in agent.lower()):
                             continue
 
-                    sessions.append((agent, project, sid_short, start_time, update_time, msg_count, sid, directory))
+                    sessions.append((agent, project, conv_title, sid_short,
+                                     start_time, update_time, msg_count, sid, directory))
 
                 con.close()
             except Exception:
@@ -914,7 +922,7 @@ class AgentLogGUI:
                     # count match what was exported (the storage folder name
                     # is an encoding that cannot be mapped back reliably).
                     try:
-                        cwd, sid, start_dt, msgs = parser(full_path)
+                        cwd, sid, title, start_dt, msgs = parser(full_path)
                     except Exception:
                         continue
                     if not msgs:
@@ -924,6 +932,9 @@ class AgentLogGUI:
                         sid = fn[:-6]  # strip ".jsonl"
                     sid_clean = sid[4:] if sid.startswith("ses_") else sid
                     sid_short = sid_clean[:8] if len(sid_clean) > 8 else sid_clean
+
+                    # Group title shown + used to find the merged export
+                    conv_title = core.clean_title(title) or core.first_user_title(msgs)
 
                     try:
                         mtime = os.stat(full_path).st_mtime
@@ -942,12 +953,14 @@ class AgentLogGUI:
                         continue
                     if search_key:
                         if (search_key not in project.lower() and
+                            search_key not in (conv_title or "").lower() and
                             search_key not in sid_short.lower() and
                             search_key not in agent_name.lower()):
                             continue
 
-                    sessions.append((agent_name, project, sid_short, start_time,
-                                     update_time, msg_count, sid, cwd or ""))
+                    sessions.append((agent_name, project, conv_title, sid_short,
+                                     start_time, update_time, msg_count, sid,
+                                     cwd or ""))
         
         # Update agent filter dropdown
         agent_list = ["全部"] + sorted(agents_set)
@@ -958,13 +971,16 @@ class AgentLogGUI:
                 self.sess_agent_var.set("全部")
         
         # 3. Sort by update time (newest first)
-        sessions.sort(key=lambda x: x[4], reverse=True)
+        sessions.sort(key=lambda x: x[5], reverse=True)
         
         # 4. Insert into tree
-        for agent, project, sid_short, start_time, update_time, msg_count, full_sid, directory in sessions:
+        for (agent, project, conv_title, sid_short, start_time, update_time,
+             msg_count, full_sid, directory) in sessions:
             self.session_tree.insert("", "end", 
-                                     values=(agent, project, sid_short, start_time, update_time, msg_count),
-                                     tags=(full_sid, directory))
+                                     values=(agent, project, conv_title or "",
+                                             sid_short, start_time, update_time,
+                                             msg_count),
+                                     tags=(full_sid, directory, conv_title or ""))
 
     def open_selected(self, event):
         sel = self.tree.selection()
@@ -991,7 +1007,7 @@ class AgentLogGUI:
             return
 
         agent = values[0]  # Agent name
-        sid, cwd = tags[0], tags[1]
+        sid, cwd, conv_title = tags[0], tags[1], (tags[2] if len(tags) > 2 else "")
         if not cwd:
             return
 
@@ -1002,11 +1018,14 @@ class AgentLogGUI:
         sid_clean = sid[4:] if sid.startswith("ses_") else sid
         sid_short = sid_clean[:8] if len(sid_clean) > 8 else sid_clean
 
-        # Export filenames follow write_export(): opencode uses one merged
-        # per-project file (path_tail(cwd) only), other agents use
-        # path_tail(cwd) + "-" + sid_short. Try both stems.
+        # Export filenames follow write_export(): one merged file per
+        # conversation group named path_tail(cwd) + "-" + title; legacy
+        # layouts (per-session / untitled merge) are tried as fallbacks.
         tail = core.path_tail(cwd)
-        wanted_stems = (tail, tail + "-" + sid_short)
+        wanted_stems = set()
+        if conv_title:
+            wanted_stems.add(f"{tail}-{conv_title}")
+        wanted_stems.update((tail, tail + "-" + sid_short))
 
         # Search for matching file in the agent directory
         agent_dir = os.path.join(OUTPUT_ROOT, agent)

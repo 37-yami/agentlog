@@ -323,13 +323,31 @@ Notes:
 
 ## Files
 
-- `agentlog.py` — the tool (daemon + CLI + per-agent parsers + proxy host).
-- `agentlog_proxy.py` — the local routing proxy (HTTP forwarding + Q/A capture).
-- `agentlog_gui.py` — optional GUI (window + system tray), reusing the above logic.
-- `agentlog.ico` — icon file (tray / window title bar / shortcut).
-- `agents.example.json` — optional config template.
-- `agent_logs/` — generated exports
-- `capture/` — raw Q/A turns captured by the proxy (per agent/day)
+```
+agentlog.py / agentlog_gui.py   # thin entry points (shortcuts/commands unchanged)
+agentlog/                       # core package
+  config.py                     # paths, toggles, mutable run options (set_options)
+  timeutil.py  extract.py       # time/path helpers, content extraction & titles
+  parsers/                      # per-agent parsers (codebuddy/pi/claude/opencode/generic)
+  opencode_db.py  capture.py    # opencode SQLite ingestion, proxy capture ingestion
+  export.py  daemon.py          # rendering/exports, scan orchestration & watch loop
+  winapi.py  cli.py             # Windows/POSIX integration, command line
+  gui/                          # GUI (app window / tray / sessions data layer)
+agentlog_proxy.py               # local routing proxy (HTTP forwarding + Q/A capture)
+tests/                          # regression tests (stdlib unittest)
+agentlog.ico  agents.example.json
+agent_logs/                     # generated exports
+capture/                        # raw Q/A turns captured by the proxy
+```
+
+## Development & tests
+
+```bash
+python -m unittest discover tests   # run the regression tests (Windows/Linux)
+```
+
+Adding an agent means a parser module in `agentlog/parsers/` plus a registry
+entry - or just adjusting globs via `agents.json` (see above).
 
 ## License
 

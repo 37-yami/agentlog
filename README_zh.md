@@ -293,13 +293,31 @@ claude 的接入示例:`setx ANTHROPIC_BASE_URL http://127.0.0.1:8765/claude`
 
 ## 文件说明
 
-- `agentlog.py` — 工具本体(守护进程 + CLI + 各 agent 解析器 + 本地代理)。
-- `agentlog_proxy.py` — 本地路由代理(HTTP 转发 + Q/A 捕获)。
-- `agentlog_gui.py` — 可选的图形界面(窗口 + 系统托盘,复用上面的逻辑)。
-- `agentlog.ico` — 图标文件(托盘 / 窗口标题栏 / 快捷方式使用)。
-- `agents.example.json` — 可选配置模板。
-- `agent_logs/` — 生成的导出文件
-- `capture/` — 本地代理捕获的原始问答(按 agent/日期分文件)
+```
+agentlog.py / agentlog_gui.py   # 薄入口(保持快捷方式/命令兼容)
+agentlog/                       # 核心包
+  config.py                     # 路径/开关/可变运行选项(set_options)
+  timeutil.py  extract.py       # 时间与路径工具 / 内容抽取与标题
+  parsers/                      # 各 agent 解析器(codebuddy/pi/claude/opencode/generic)
+  opencode_db.py  capture.py    # opencode SQLite 摄取 / 本地代理捕获摄取
+  export.py  daemon.py          # 渲染与导出 / 扫描编排与守护循环
+  winapi.py  cli.py             # Windows/POSIX 平台集成 / 命令行
+  gui/                          # 图形界面(app 主窗口 / tray 托盘 / sessions 数据层)
+agentlog_proxy.py               # 本地路由代理(HTTP 转发 + Q/A 捕获)
+tests/                          # 回归测试(纯标准库 unittest)
+agentlog.ico  agents.example.json
+agent_logs/                     # 生成的导出文件
+capture/                        # 本地代理捕获的原始问答(按 agent/日期分文件)
+```
+
+## 开发与测试
+
+```bash
+python -m unittest discover tests   # 运行回归测试(Windows/Linux 通用)
+```
+
+新增 agent 只需在 `agentlog/parsers/` 添加解析器并在 `parsers/__init__.py`
+注册,或直接通过 `agents.json` 调整 glob(见上文"添加 / 调整 agent")。
 
 ## 许可证
 

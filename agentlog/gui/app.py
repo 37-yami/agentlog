@@ -148,17 +148,19 @@ class AgentLogGUI:
         file_tree_frame = ttk.Frame(file_tab)
         file_tree_frame.pack(fill="both", expand=True, padx=10, pady=(6, 0))
 
-        cols = ("agent", "file", "mtime")
+        cols = ("agent", "file", "msgs", "mtime")
         self.tree = ttk.Treeview(file_tree_frame, columns=cols, show="tree headings",
                                  padding=10, selectmode="extended")
         self.tree.heading("#0", text="路径 (项目)", command=lambda: self._sort_tree("#0"))
         self.tree.heading("agent", text="agent", command=lambda: self._sort_tree("agent"))
         self.tree.heading("file", text="文件", command=lambda: self._sort_tree("file"))
+        self.tree.heading("msgs", text="消息数", command=lambda: self._sort_tree("msgs"))
         self.tree.heading("mtime", text="更新时间 ↓", command=lambda: self._sort_tree("mtime"))
-        self.tree.column("#0", width=250, minwidth=150, stretch=True)
-        self.tree.column("agent", width=80, minwidth=60, stretch=False)
-        self.tree.column("file", width=200, minwidth=100, stretch=True)
-        self.tree.column("mtime", width=120, minwidth=100, stretch=False)
+        self.tree.column("#0", width=230, minwidth=150, stretch=True)
+        self.tree.column("agent", width=70, minwidth=60, stretch=False)
+        self.tree.column("file", width=190, minwidth=100, stretch=True)
+        self.tree.column("msgs", width=60, minwidth=50, stretch=False)
+        self.tree.column("mtime", width=115, minwidth=100, stretch=False)
 
         self._sort_col = "mtime"
         self._sort_reverse = True  # descending by default (newest first)
@@ -412,7 +414,7 @@ class AgentLogGUI:
             self._sort_reverse = False
         
         # Update heading arrows
-        for c in ("#0", "agent", "file", "mtime"):
+        for c in ("#0", "agent", "file", "msgs", "mtime"):
             text = self.tree.heading(c)["text"].rstrip(" ↓↑")
             if c == col:
                 text += " ↑" if not self._sort_reverse else " ↓"
@@ -430,13 +432,13 @@ class AgentLogGUI:
             tags = self.tree.item(item, "tags")
             if col == "#0":
                 val = self.tree.item(item, "text")
-            elif col == "mtime":
-                # Parse time string for proper sorting
-                val = self.tree.item(item, "values")[2] if len(self.tree.item(item, "values")) > 2 else ""
             else:
-                idx = {"agent": 0, "file": 1}.get(col, 0)
+                idx = {"agent": 0, "file": 1, "msgs": 2, "mtime": 3}.get(col, 0)
                 vals = self.tree.item(item, "values")
                 val = vals[idx] if idx < len(vals) else ""
+                # msg count is numeric - sort numerically, not as text
+                if col == "msgs":
+                    val = int(val) if str(val).isdigit() else -1
             items.append((val, item, tags))
         
         # Sort items
@@ -506,6 +508,43 @@ class AgentLogGUI:
         self.refresh_exports()
 
     # ---- exports ----
+    _MSG_COUNT_RE = None  # compiled lazily (class-level cache)
+
+    def _read_msg_count(self, full, fn, mtime):
+        """Message count shown in the file list, taken from the export
+        header ("# Messages: N" / "- **Messages:** N"); JSON exports are
+        parsed. Cached per (path, mtime) so refreshes stay cheap."""
+        cache = getattr(self, "_msg_count_cache", None)
+        if cache is None:
+            cache = self._msg_count_cache = {}
+        ck = (full, mtime)
+        if ck in cache:
+            return cache[ck]
+        n = "?"
+        try:
+            if fn.endswith(".json"):
+                import json
+                with open(full, encoding="utf-8") as fh:
+                    data = json.load(fh)
+                n = len(data.get("messages") or [])
+            else:
+                if AgentLogGUI._MSG_COUNT_RE is None:
+                    import re
+                    AgentLogGUI._MSG_COUNT_RE = re.compile(r"Messages:\**\s*(\d+)")
+                with open(full, encoding="utf-8") as fh:
+                    for _ in range(12):
+                        line = fh.readline()
+                        if not line:
+                            break
+                        m = AgentLogGUI._MSG_COUNT_RE.search(line)
+                        if m:
+                            n = int(m.group(1))
+                            break
+        except (OSError, ValueError):
+            pass
+        cache[ck] = n
+        return n
+
     def refresh_exports(self):
         for item in self.tree.get_children():
             self.tree.delete(item)
@@ -585,8 +624,12 @@ class AgentLogGUI:
             from datetime import datetime
             mtime_str = datetime.fromtimestamp(mtime).strftime("%Y-%m-%d %H:%M")
 
+            # Message count from the export header (cheap: head lines only;
+            # json exports have no header count, count via parse)
+            nmsgs = self._read_msg_count(full, fn, mtime)
+
             self.tree.insert("", "end", text=display_fn,
-                             values=(agent, fn, mtime_str), tags=(full,))
+                             values=(agent, fn, nmsgs, mtime_str), tags=(full,))
 
         # Apply current sort (default: mtime descending)
         self._apply_tree_sort()

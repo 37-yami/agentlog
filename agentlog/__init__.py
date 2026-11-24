@@ -26,7 +26,9 @@ from .opencode_db import (opencode_db_path, ingest_opencode_db,
 from .capture import (CAPTURE_DIR, PROXY_PORT, norm_cwd, covered_key,
                       proxy_alive, ingest_capture)
 from .daemon import (scan_once, run_loop, log, load_state, save_state,
-                     ingest_jsonl_agent, start_proxy_thread)
+                     ingest_jsonl_agent, collect_jsonl_groups,
+                     start_proxy_thread)
+from .prune import prune_exports
 from .winapi import (run_cmd, pythonw_exe, read_pid, is_running,
                      write_pid, detach_streams, acquire_run_lock,
                      find_agentlog_pids, kill_all_agentlog, create_shortcut,

@@ -143,6 +143,8 @@ class AgentLogGUI:
         self.search_entry.bind("<Return>", lambda e: self.refresh_exports())
         ttk.Button(file_row2, text="搜索", command=self.refresh_exports).pack(
             side="left", padx=(0, 4))
+        ttk.Button(file_row2, text="清理小会话",
+                   command=self.do_prune).pack(side="left", padx=(0, 4))
 
         # File tree
         file_tree_frame = ttk.Frame(file_tab)
@@ -285,6 +287,32 @@ class AgentLogGUI:
         self.refresh_status()
         core.cmd_start()
         self.refresh_status()
+
+    def do_prune(self):
+        """Manual prune of tiny stale conversation exports (confirm first)."""
+        try:
+            state = core.load_state()
+            targets = core.prune_exports(state, dry_run=True)
+            if not targets:
+                self.hint.set("没有符合条件的小会话 (≤ "
+                              f"{core.config.MIN_MESSAGES} 条且超过 "
+                              f"{core.config.PRUNE_AFTER_HOURS:g} 小时)。")
+                return
+            names = "\n".join("  " + os.path.basename(f) for f in targets[:8])
+            more = f"\n  ...等共 {len(targets)} 个文件" if len(targets) > 8 else ""
+            if not messagebox.askyesno(
+                    "确认清理",
+                    f"将删除 {len(targets)} 个小会话导出文件"
+                    f"(消息数 ≤ {core.config.MIN_MESSAGES} 且超过 "
+                    f"{core.config.PRUNE_AFTER_HOURS:g} 小时):\n"
+                    f"{names}{more}\n\n删除后不会自动重新生成。确定?"):
+                return
+            removed = core.prune_exports(state, dry_run=False)
+            core.save_state(state)
+            self.hint.set(f"已清理 {len(removed)} 个小会话文件。")
+        except Exception as e:
+            self.hint.set(f"清理出错: {e}")
+        self.refresh_exports()
 
     def do_scan(self):
         try:

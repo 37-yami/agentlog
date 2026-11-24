@@ -132,24 +132,18 @@ def _read_session_v2_messages(con, sid):
     return msgs
 
 
-def ingest_opencode_db(watch, state):
-    """opencode (newer versions) stores sessions in a SQLite database rather
-    than JSONL. Each session row has a `directory` (the project cwd). Two
-    schema generations exist: the legacy `session`/`message`/`part` tables
-    and (since late-2026 builds) the event-sourced `session_v2` +
-    `session_message` tables. We read both; on duplicate session ids
-    session_v2 wins since it holds the migrated history plus all newer
-    messages. Sessions are merged per (project, conversation title).
-    Sub-agent sessions (parent_id) and connectivity probes are skipped."""
+def collect_opencode_groups():
+    """Collect all opencode conversations from the SQLite database into
+    groups: (cwd, title) -> {"msgs": [deduped, chronological], "tcreate",
+    "tupdate"}. Shared by the export ingestion and the manual prune."""
     dbp = opencode_db_path()
     if not dbp:
-        return
-    agent = watch["agent"]
+        return {}
     try:
         con = sqlite3.connect(f"file:{dbp}?mode=ro", uri=True)
     except Exception as e:
         log(f"[opencode-db] cannot open {dbp}: {e}")
-        return
+        return {}
     try:
         cur = con.cursor()
         # Sub-agent sessions (parent_id set, e.g. @explore tasks) are internal
@@ -185,11 +179,7 @@ def ingest_opencode_db(watch, state):
                 msgs = _read_session_v2_messages(con, sid)
             else:
                 msgs = _read_legacy_session_messages(con, sid)
-            if not msgs:
-                continue
-            # Skip connectivity probes (e.g. skills that send "Reply with
-            # exactly: OK"): the exact probe phrase, not just any short chat.
-            if is_probe(msgs):
+            if not msgs or is_probe(msgs):
                 continue
             base_title = FORK_SUFFIX_RE.sub("", (title or "").strip())
             gtitle = clean_title(base_title) or first_user_title(msgs)
@@ -201,27 +191,7 @@ def ingest_opencode_db(watch, state):
             g["tupdate"] = max(g["tupdate"], tupdate or tcreate or 0)
             if tcreate and (g["tcreate"] is None or tcreate < g["tcreate"]):
                 g["tcreate"] = tcreate
-        keep = {}
-        for (cwd, gtitle), g in groups.items():
-            # proxy capture takes precedence for covered projects
-            if covered_key(agent, cwd) in state.get("_capture_covered", {}):
-                continue
-            key = f"opencode-db:grp:{cwd}|{gtitle}"
-            stem = f"{path_tail(cwd)}-{gtitle}"
-            # Auto-prune tiny conversations that are safely in the past (see
-            # daemon.ingest_jsonl_agent; the stem stays out of `keep` so the
-            # old export file is removed and never regenerated).
-            if should_prune(g["msgs"]):
-                if state.get(key, {}).get("pruned") is not True:
-                    log(f"[prune] {agent} {stem} ({len(g['msgs'])} msgs, "
-                        f"<={config.MIN_MESSAGES} and older than "
-                        f"{config.PRUNE_AFTER_HOURS:g}h)")
-                    state[key] = {"mtime": g["tupdate"] / 1000.0,
-                                  "size": len(g["msgs"]),
-                                  "out": None, "pruned": True}
-                continue
-            # Dedupe messages copied into forked/compacted sessions, then
-            # order chronologically.
+        for g in groups.values():
             seen = set()
             uniq = []
             for ts, role, text, thinking in g["msgs"]:
@@ -231,13 +201,31 @@ def ingest_opencode_db(watch, state):
                 seen.add(k)
                 uniq.append((ts, role, text, thinking))
             uniq.sort(key=lambda m: (m[0] is None, m[0]))
-            write_export(agent, cwd, None, parse_ts(g["tcreate"]), uniq,
-                         key, g["tupdate"] / 1000.0, len(uniq), state,
-                         title=gtitle,
-                         include_thinking=config.INCLUDE_THINKING,
-                         output_formats=config.OUTPUT_FORMATS)
-            keep.setdefault(cwd, set()).add(stem)
-        for cwd in {c for (c, _t) in groups}:
-            cleanup_exports(agent, cwd, keep.get(cwd, set()), log=log)
+            g["msgs"] = uniq
+        return groups
     finally:
         con.close()
+
+
+def ingest_opencode_db(watch, state):
+    """Export one merged file per opencode conversation group (see
+    collect_opencode_groups for the grouping rules)."""
+    agent = watch["agent"]
+    groups = collect_opencode_groups()
+    if not groups:
+        return
+    keep = {}
+    for (cwd, gtitle), g in groups.items():
+        # proxy capture takes precedence for covered projects
+        if covered_key(agent, cwd) in state.get("_capture_covered", {}):
+            continue
+        key = f"opencode-db:grp:{cwd}|{gtitle}"
+        stem = f"{path_tail(cwd)}-{gtitle}"
+        write_export(agent, cwd, None, parse_ts(g["tcreate"]), g["msgs"],
+                     key, g["tupdate"] / 1000.0, len(g["msgs"]), state,
+                     title=gtitle,
+                     include_thinking=config.INCLUDE_THINKING,
+                     output_formats=config.OUTPUT_FORMATS)
+        keep.setdefault(cwd, set()).add(stem)
+    for cwd in {c for (c, _t) in groups}:
+        cleanup_exports(agent, cwd, keep.get(cwd, set()), log=log)

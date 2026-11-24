@@ -10,7 +10,7 @@ from .capture import CAPTURE_DIR, PROXY_PORT, covered_key, ingest_capture, norm_
 from .config import (IGNORE_DIR_PARTS, LOG_FILE, POLL_SECONDS,
                      STATE_FILE)
 from .export import cleanup_exports, write_export
-from .extract import clean_title, first_user_title, is_probe, should_prune
+from .extract import clean_title, first_user_title, is_probe
 from .opencode_db import ingest_opencode_db
 from .parsers import AGENTS
 from .timeutil import fmt, path_tail
@@ -41,15 +41,14 @@ def save_state(state):
         pass
 
 
-def ingest_jsonl_agent(watch, state):
-    """Scrape one agent's JSONL transcripts, merged per conversation group.
+def collect_jsonl_groups(watch):
+    """Collect one agent's JSONL transcripts into conversation groups:
+    (cwd, title) -> {"msgs": [deduped, chronological], "start", "mtime"}.
 
-    Sessions are aggregated by (project, group title): agent-generated titles
-    (codebuddy ai-title / pi session title) group directly; otherwise the
-    first user message groups them, which also folds forked/resumed sessions
-    (they copy the history, so their first user message matches)."""
+    Shared by the export ingestion and the manual prune so both see exactly
+    the same grouping (and therefore the same dedupe keys)."""
     agent = watch["agent"]
-    groups = {}   # (cwd, title) -> {"msgs", "start", "mtime"}
+    groups = {}
     for pattern in watch["globs"]:
         for path in glob.glob(pattern, recursive=True):
             parts = path.replace("\\", "/").split("/")
@@ -79,26 +78,7 @@ def ingest_jsonl_agent(watch, state):
             if g["start"] is None:
                 g["start"] = start
             g["mtime"] = max(g["mtime"], st.st_mtime)
-    # Export one merged file per conversation group.
-    keep = {}   # cwd -> set of stems still valid
-    for (cwd, title), g in groups.items():
-        # The proxy capture is authoritative for covered projects.
-        if covered_key(agent, cwd) in state.get("_capture_covered", {}):
-            continue
-        key = f"{agent}:grp:{cwd}|{title}"
-        stem = f"{path_tail(cwd)}-{title}"
-        # Auto-prune tiny conversations that are safely in the past. Not
-        # adding the stem to `keep` makes cleanup_exports() remove the old
-        # file; the data-derived condition also guarantees it never comes
-        # back on later scans.
-        if should_prune(g["msgs"]):
-            if state.get(key, {}).get("pruned") is not True:
-                log(f"[prune] {agent} {stem} ({len(g['msgs'])} msgs, "
-                    f"<={config.MIN_MESSAGES} and older than "
-                    f"{config.PRUNE_AFTER_HOURS:g}h)")
-                state[key] = {"mtime": g["mtime"], "size": len(g["msgs"]),
-                              "out": None, "pruned": True}
-            continue
+    for g in groups.values():
         seen = set()
         uniq = []
         for m in g["msgs"]:
@@ -108,8 +88,25 @@ def ingest_jsonl_agent(watch, state):
             seen.add(k)
             uniq.append(m)
         uniq.sort(key=lambda m: (m[0] is None, m[0]))
-        write_export(agent, cwd, None, g["start"], uniq, key,
-                     g["mtime"], len(uniq), state, title=title,
+        g["msgs"] = uniq
+    return groups
+
+
+def ingest_jsonl_agent(watch, state):
+    """Scrape one agent's JSONL transcripts and export one merged file per
+    conversation group (see collect_jsonl_groups for the grouping rules)."""
+    agent = watch["agent"]
+    groups = collect_jsonl_groups(watch)
+    # Export one merged file per conversation group.
+    keep = {}   # cwd -> set of stems still valid
+    for (cwd, title), g in groups.items():
+        # The proxy capture is authoritative for covered projects.
+        if covered_key(agent, cwd) in state.get("_capture_covered", {}):
+            continue
+        key = f"{agent}:grp:{cwd}|{title}"
+        stem = f"{path_tail(cwd)}-{title}"
+        write_export(agent, cwd, None, g["start"], g["msgs"], key,
+                     g["mtime"], len(g["msgs"]), state, title=title,
                      include_thinking=config.INCLUDE_THINKING,
                      output_formats=config.OUTPUT_FORMATS)
         keep.setdefault(cwd, set()).add(stem)

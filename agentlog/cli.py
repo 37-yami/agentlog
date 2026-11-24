@@ -8,6 +8,7 @@ from . import config
 from .capture import PROXY_PORT, proxy_alive
 from .config import HERE, ICON_PATH, LOG_FILE, OUTPUT_FORMATS, STATE_FILE
 from .daemon import load_state, log, run_loop, save_state, scan_once
+from .prune import prune_exports
 from .winapi import (CREATE_NO_WINDOW, SYSTEMD_UNIT_DIR, SYSTEMD_UNIT_PATH,
                      autostart_blocked, create_shortcut, detach_streams,
                      find_agentlog_pids, kill_all_agentlog, pythonw_exe,
@@ -288,6 +289,23 @@ def cmd_build_icon(src):
     build_icon(src)
 
 
+def cmd_prune():
+    """Manually remove exports of tiny stale conversations (<= MIN_MESSAGES
+    messages, newest older than PRUNE_AFTER_HOURS) plus orphaned exports
+    whose source transcripts are already gone."""
+    state = load_state()
+    targets = prune_exports(state, dry_run=True)
+    if not targets:
+        print("nothing to prune.")
+        return
+    for f in targets:
+        print("  would remove:", os.path.relpath(f, config.HERE))
+    removed = prune_exports(state, dry_run=False)
+    save_state(state)
+    print(f"pruned {len(removed)} file(s); regeneration is blocked by the "
+          f"state marker until a conversation gets new messages.")
+
+
 def cmd_route():
     """Print per-agent configuration to route API traffic through the
     local proxy. Routed agents are captured at request time; their legacy
@@ -329,7 +347,8 @@ def main():
     ap.add_argument("action", nargs="?", default="once",
                     choices=["run", "once", "start", "stop",
                              "status", "install", "uninstall",
-                             "gui-shortcut", "build-icon", "route"])
+                             "gui-shortcut", "build-icon", "route",
+                             "prune"])
     ap.add_argument("path", nargs="?", default="")
     ap.add_argument("-t", "--include-thinking", action="store_true",
                     help="Include thinking/reasoning content in output")
@@ -370,3 +389,5 @@ def main():
         cmd_build_icon(args.path)
     elif args.action == "route":
         cmd_route()
+    elif args.action == "prune":
+        cmd_prune()

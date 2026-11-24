@@ -44,17 +44,17 @@ def proxy_alive(timeout=0.5):
         return False
 
 
-def ingest_capture(state):
-    if not os.path.isdir(CAPTURE_DIR):
-        # Capture data gone entirely -> no project is covered any more and
-        # the legacy scrape resumes everywhere.
-        state.pop("_capture_covered", None)
-        return
-    # Pass 1: parse every daily file per agent (cached), aggregating ALL days
-    # of the same (agent, cwd) together - a conversation spanning several
-    # days must end up in ONE export, not overwrite itself day by day.
+def collect_capture_groups():
+    """Parse the proxy capture store into groups: covered_key ->
+    {"agent", "cwd", "msgs": [chronological], "n", "mtime"}. Shared by the
+    export ingestion and the manual prune."""
     import json
-    agg = {}   # covered_key -> {"agent","cwd","msgs","n","mtime"}
+    agg = {}
+    if not os.path.isdir(CAPTURE_DIR):
+        return agg
+    # Parse every daily file per agent (cached), aggregating ALL days of the
+    # same (agent, cwd) together - a conversation spanning several days must
+    # end up in ONE export, not overwrite itself day by day.
     for agent_name in sorted(os.listdir(CAPTURE_DIR)):
         adir = os.path.join(CAPTURE_DIR, agent_name)
         if not os.path.isdir(adir):
@@ -105,31 +105,26 @@ def ingest_capture(state):
                 p["msgs"].extend(g["msgs"])
                 p["n"] += g["n"]
                 p["mtime"] = max(p["mtime"], st.st_mtime)
-    # Pass 2: rebuild the covered set from what capture data actually shows
-    # (stale markers disappear automatically once data is deleted).
+    for p in agg.values():
+        p["msgs"] = sorted(p["msgs"], key=lambda m: (m[0] is None, m[0]))
+    return agg
+
+
+def ingest_capture(state):
+    if not os.path.isdir(CAPTURE_DIR):
+        # Capture data gone entirely -> no project is covered any more and
+        # the legacy scrape resumes everywhere.
+        state.pop("_capture_covered", None)
+        return
+    agg = collect_capture_groups()
+    # Rebuild the covered set from what capture data actually shows (stale
+    # markers disappear automatically once data is deleted).
     state["_capture_covered"] = {ck: True for ck in agg}
-    # Pass 3: one merged export per (agent, cwd), auto-pruning tiny stale
-    # conversations like every other ingestion.
-    from .extract import should_prune
-    from .daemon import log
+    # One merged export per (agent, cwd).
     for ck, p in agg.items():
         if not p["msgs"] or p["n"] == 0:
             continue
-        msgs = sorted(p["msgs"], key=lambda m: (m[0] is None, m[0]))
-        key = "capture:" + ck
-        stem = f"{path_tail(p['cwd'])}"
-        if should_prune(msgs):
-            if state.get(key, {}).get("pruned") is not True:
-                log(f"[prune] {p['agent']} {stem} (capture, {len(msgs)} msgs, "
-                    f"<={config.MIN_MESSAGES} and older than "
-                    f"{config.PRUNE_AFTER_HOURS:g}h)")
-                state[key] = {"mtime": p["mtime"], "size": p["n"],
-                              "out": None, "pruned": True}
-            # Remove the old export file (capture groups are one file per
-            # project, so an empty keep set removes exactly it).
-            cleanup_exports(p["agent"], p["cwd"], set(), log=log)
-            continue
-        write_export(p["agent"], p["cwd"], None, msgs[0][0], msgs,
-                     key, p["mtime"], p["n"], state,
+        write_export(p["agent"], p["cwd"], None, p["msgs"][0][0], p["msgs"],
+                     "capture:" + ck, p["mtime"], p["n"], state,
                      include_thinking=config.INCLUDE_THINKING,
                      output_formats=config.OUTPUT_FORMATS)

@@ -150,8 +150,10 @@ python agentlog_gui.py
 
 The UI uses a dark theme (dark widgets + selectable background). The
 **"背景"** button in the top bar offers 6 preset solid colors, a custom
-color picker (overly bright picks are dimmed automatically to keep text
-readable) and a reset; the choice persists to a local `agentlog_gui.json`.
+color picker (overly bright picks are dimmed automatically), **a custom
+image** (fullscreen behind the rounded cards, needs Pillow) and a reset;
+the choice persists to a local `agentlog_gui.json`. The three layout
+regions (control bar / lists / bottom bar) float as rounded cards.
 
 ### Features
 

@@ -114,6 +114,28 @@ class TestGrouping(ExportBase):
         cdir = os.path.join(config.OUTPUT_ROOT, "claude")
         self.assertFalse(os.path.isdir(cdir))  # 不导出
 
+    def test_parent_dir_prefix_never_deletes_child_exports(self):
+        # 会话跑在父目录 E:\other\project 时, 其 prefix("other-project") 与
+        # 子项目文件名前缀重叠 - cleanup 绝不能删除子项目的导出(写删死循环 bug)
+        from agentlog.export import cleanup_exports
+        cdir = os.path.join(config.OUTPUT_ROOT, "claude")
+        os.makedirs(cdir)
+        victims = ["other-project-Invoiceeee-主对话.md",
+                   "other-project-agentlog-项目分析.md",
+                   "other-project-003ae916.md"]  # 旧 per-session 格式(应删)
+        for fn in victims[:-1]:
+            open(os.path.join(cdir, fn), "w", encoding="utf-8").write("child")
+        open(os.path.join(cdir, victims[-1]), "w", encoding="utf-8").write("old")
+        # 父目录项目 cleanup: keep 只有它自己的 stem
+        cleanup_exports("claude", "E:\\other\\project",
+                        {"other-project-父会话"})
+        left = sorted(os.listdir(cdir))
+        # 子项目 titled 文件保留; 8hex 散文件被删(旧格式, 归父项目也无害:
+        # 属于子项目的 8hex 文件由子项目自己的 cleanup 处理, 这里 prefix
+        # 匹配的 8hex 属于 E:\other\project 自身的旧导出)
+        self.assertIn("other-project-Invoiceeee-主对话.md", left)
+        self.assertIn("other-project-agentlog-项目分析.md", left)
+
 
 if __name__ == "__main__":
     unittest.main()

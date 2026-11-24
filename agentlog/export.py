@@ -190,10 +190,18 @@ def write_export(agent, cwd, sid, start, msgs, key, mtime, size, state,
 _EXPORT_EXTS = ("txt", "md", "json")
 
 
+_SID_TAIL_RE = None  # compiled lazily
+
+
 def cleanup_exports(agent, cwd, keep_stems, log=None):
-    """Remove this project's export files whose stem is not in keep_stems
-    (old per-session files, previous untitled merges, or everything when the
-    proxy capture covers the project and keep_stems is empty)."""
+    """Remove this project's superseded export files.
+
+    Ownership is decided by EXACT formats only - a bare path_tail (old
+    untitled merge) or path_tail + '-' + 8-hex session id (old per-session
+    exports). A plain prefix match would be ambiguous: a conversation run in
+    a PARENT directory (e.g. E:\\other\\project) shares its path_tail prefix
+    ("other-project") with every child project ("other-project-agentlog-...")
+    and would delete all of their exports in a write/delete loop."""
     adir = os.path.join(config.OUTPUT_ROOT, agent)
     prefix = path_tail(cwd)
     for sub in ("", config.THINKING_DIR):
@@ -206,8 +214,15 @@ def cleanup_exports(agent, cwd, keep_stems, log=None):
                 continue
             if stem in keep_stems:
                 continue
-            if stem != prefix and not stem.startswith(prefix + "-"):
-                continue  # belongs to a different project
+            if stem == prefix:
+                pass  # old untitled merge of exactly this project
+            elif stem.startswith(prefix + "-"):
+                tail = stem[len(prefix) + 1:]
+                if not (len(tail) == 8 and all(c in "0123456789abcdef"
+                                                for c in tail)):
+                    continue  # titled export of another/sub project - keep
+            else:
+                continue  # different project
             try:
                 os.remove(os.path.join(d, fn))
                 if log:

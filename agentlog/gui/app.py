@@ -45,9 +45,16 @@ class AgentLogGUI:
             except Exception:
                 pass
         # dark theme; background color is user-selectable and persisted
-        self.bg_color = self._load_gui_cfg().get("bg_color") or theme.CONTENT
+        cfg = self._load_gui_cfg()
+        self.bg_color = cfg.get("bg_color") or theme.CONTENT
+        self.wallpaper = theme.Wallpaper(cfg.get("bg_image") or None)
+        self._cards = []
+        self._wp_label = tk.Label(self.root, bd=0)
+        self._wp_label.place(x=0, y=0, relwidth=1, relheight=1)
+        self._wp_job = None
         self._apply_theme()
         self._build_widgets()
+        self.root.bind("<Configure>", self._on_resized)
         self.refresh_status()
         self.refresh_exports()
         # refresh status periodically
@@ -75,11 +82,46 @@ class AgentLogGUI:
 
     def _apply_theme(self):
         self.bg_color = theme.apply_dark_theme(self.root, self.bg_color)
+        self._wp_label.configure(bg=self.bg_color)
+        self._repaint_wallpaper()
+        for card in getattr(self, "_cards", []):
+            card.set_colors(bg=self.bg_color, surface=theme.CARD)
+
+    def _on_resized(self, e):
+        if e.widget is not self.root:
+            return
+        if self._wp_job:
+            self.root.after_cancel(self._wp_job)
+        self._wp_job = self.root.after(250, self._repaint_wallpaper)
+
+    def _repaint_wallpaper(self):
+        self._wp_job = None
+        photo = self.wallpaper.photo(self.root.winfo_width(),
+                                     self.root.winfo_height())
+        if photo is not None:
+            self._wp_label.configure(image=photo, bg=self.bg_color)
+            self._wp_label.image = photo
+        else:
+            self._wp_label.configure(image="", bg=self.bg_color)
 
     def set_background(self, color):
         self.bg_color = color
+        self.wallpaper.path = None   # solid color overrides the image
         self._apply_theme()
-        self._save_gui_cfg(bg_color=color)
+        self._save_gui_cfg(bg_color=color, bg_image="")
+
+    def set_background_image(self, path):
+        self.wallpaper = theme.Wallpaper(path)
+        self._apply_theme()
+        self._save_gui_cfg(bg_image=path)
+
+    def _card(self, **pack):
+        """Wrap one layout region into a rounded card placed on the window
+        background (image or solid color)."""
+        card = theme.Card(self.root, bg=theme.CARD)
+        card.pack(**pack)
+        self._cards.append(card)
+        return card
 
     def pick_background(self):
         """Small popup: preset swatches + custom color + default."""
@@ -115,6 +157,18 @@ class AgentLogGUI:
                 self.set_background(r[1])
                 win.destroy()
 
+        def custom_image():
+            path = filedialog.askopenfilename(
+                title="选择背景图片", parent=win,
+                filetypes=[("图片", "*.jpg *.jpeg *.png *.bmp *.webp"),
+                           ("所有文件", "*.*")])
+            if path:
+                self.set_background_image(path)
+                win.destroy()
+
+        if theme.HAS_PIL:
+            ttk.Button(btns, text="自定义图片…",
+                       command=custom_image).pack(side="left", padx=4)
         ttk.Button(btns, text="自定义颜色…", command=custom).pack(side="left",
                                                                  padx=4)
         ttk.Button(btns, text="恢复默认",
@@ -129,9 +183,8 @@ class AgentLogGUI:
         self.root.wait_window(win)
 
     def _build_widgets(self):
-        # Top control bar
-        f = ttk.Frame(self.root, padding=10)
-        f.pack(fill="x")
+        # Top control bar (rounded card on the window background)
+        f = self._card(fill="x", padx=10, pady=(10, 0)).inner
 
         self.status_var = tk.StringVar(value="状态: 检测中…")
         ttk.Label(f, textvariable=self.status_var, font=("Segoe UI", 11, "bold")
@@ -150,9 +203,9 @@ class AgentLogGUI:
         ttk.Button(f, text="背景", command=self.pick_background).pack(
             side="right", padx=(0, 8))
 
-        # exports tree with scrollbar
-        tree_frame = ttk.Frame(self.root)
-        tree_frame.pack(fill="both", expand=True, padx=10, pady=(6, 0))
+        # exports tree with scrollbar (rounded card)
+        tree_frame = self._card(fill="both", expand=True,
+                                 padx=10, pady=(8, 0)).inner
 
         # Notebook for switching between file view and session view
         self.notebook = ttk.Notebook(tree_frame)
@@ -233,7 +286,7 @@ class AgentLogGUI:
 
         cols = ("agent", "file", "msgs", "mtime")
         self.tree = ttk.Treeview(file_tree_frame, columns=cols, show="tree headings",
-                                 padding=10, selectmode="extended")
+                                 padding=10, selectmode="extended", height=12)
         self.tree.heading("#0", text="路径 (项目)", command=lambda: self._sort_tree("#0"))
         self.tree.heading("agent", text="agent", command=lambda: self._sort_tree("agent"))
         self.tree.heading("file", text="文件", command=lambda: self._sort_tree("file"))
@@ -281,7 +334,7 @@ class AgentLogGUI:
 
         sess_cols = ("agent", "project", "title", "session_id", "start_time", "update_time", "msg_count")
         self.session_tree = ttk.Treeview(session_tab, columns=sess_cols, show="headings",
-                                         padding=10, selectmode="browse")
+                                         padding=10, selectmode="browse", height=12)
         self.session_tree.heading("agent", text="Agent", command=lambda: self._sort_session_tree("agent"))
         self.session_tree.heading("project", text="项目路径", command=lambda: self._sort_session_tree("project"))
         self.session_tree.heading("title", text="标题", command=lambda: self._sort_session_tree("title"))
@@ -326,9 +379,9 @@ class AgentLogGUI:
             side="right", padx=3)
         self.tree.bind("<<TreeviewSelect>>", self._on_select_change)
 
-        # Bottom bar (only minimize and quit)
-        bottom = ttk.Frame(self.root, padding=6)
-        bottom.pack(fill="x", side="bottom")
+        # Bottom bar (rounded card; only minimize and quit)
+        bottom = self._card(side="bottom", fill="x",
+                            padx=10, pady=(8, 10)).inner
         ttk.Button(bottom, text="最小化到托盘", command=self.minimize).pack(
             side="left", padx=6)
         ttk.Button(bottom, text="退出", command=self.quit_app).pack(

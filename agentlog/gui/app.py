@@ -84,8 +84,6 @@ class AgentLogGUI:
         self.bg_color = theme.apply_dark_theme(self.root, self.bg_color)
         self._wp_label.configure(bg=self.bg_color)
         self._repaint_wallpaper()
-        for card in getattr(self, "_cards", []):
-            card.set_colors(bg=self.bg_color, surface=theme.CARD)
 
     def _on_resized(self, e):
         if e.widget is not self.root:
@@ -103,7 +101,18 @@ class AgentLogGUI:
             self._wp_label.image = photo
         else:
             self._wp_label.configure(image="", bg=self.bg_color)
+        # Image mode: panels become darkened-wallpaper glass and every
+        # surface color is derived from the image (fusion), so the picture
+        # stays visible through the card corners, gaps and card surfaces.
+        fusion = self.wallpaper.fusion_colors() if photo is not None else None
+        theme.apply_dark_theme(self.root, self.bg_color, surface=fusion)
+        card_surface = fusion[0] if fusion else theme.CARD
         for card in getattr(self, "_cards", []):
+            if photo is not None:
+                card.set_wallpaper(self.wallpaper, self.root)
+            else:
+                card.set_wallpaper(None, None)
+            card.set_colors(bg=self.bg_color, surface=card_surface)
             card.redraw()
 
     def set_background(self, color):

@@ -17,6 +17,7 @@ import tkinter as tk
 from tkinter import ttk, messagebox
 
 import agentlog as core  # reuse cmd_*/scan_once/paths
+from agentlog import config
 from agentlog.gui.sessions import collect_sessions
 from agentlog.gui.tray import build_tray
 
@@ -31,8 +32,8 @@ class AgentLogGUI:
     def __init__(self, root):
         self.root = root
         root.title("agentlog - 对话记录守护")
-        root.geometry("720x520")
-        root.minsize(560, 360)
+        root.geometry("880x560")
+        root.minsize(720, 420)
 
         self.tray_teardown = None
         if os.path.exists(ICON_PATH):
@@ -288,28 +289,95 @@ class AgentLogGUI:
         core.cmd_start()
         self.refresh_status()
 
+    def _prune_settings_dialog(self):
+        """Ask for the prune thresholds (message count / age in hours).
+        Returns (min_messages, hours) or None when cancelled. Defaults mirror
+        config.MIN_MESSAGES / config.PRUNE_AFTER_HOURS."""
+        result = {}
+
+        win = tk.Toplevel(self.root)
+        win.title("清理小会话 - 参数")
+        win.transient(self.root)
+        win.resizable(False, False)
+        frm = ttk.Frame(win, padding=14)
+        frm.pack(fill="both", expand=True)
+
+        ttk.Label(frm, text="消息数阈值 n:").grid(row=0, column=0,
+                                                  sticky="w", pady=4)
+        n_var = tk.IntVar(value=config.MIN_MESSAGES)
+        n_spin = ttk.Spinbox(frm, from_=0, to=100000, textvariable=n_var,
+                             width=8)
+        n_spin.grid(row=0, column=1, sticky="w", padx=(8, 20))
+
+        ttk.Label(frm, text="对话静置时间(小时):").grid(row=1, column=0,
+                                                         sticky="w", pady=4)
+        h_var = tk.DoubleVar(value=float(config.PRUNE_AFTER_HOURS))
+        h_spin = ttk.Spinbox(frm, from_=0, to=100000, increment=1,
+                             textvariable=h_var, width=8)
+        h_spin.grid(row=1, column=1, sticky="w", padx=(8, 20))
+
+        ttk.Label(frm, foreground="#666",
+                  text="清理: 消息数 ≤ n 且最后一条消息早于设定小时数\n"
+                       "(源数据不会被改动,仅删导出文件且不会重新生成)"
+                  ).grid(row=2, column=0, columnspan=2, sticky="w",
+                         pady=(8, 0))
+
+        def ok():
+            try:
+                n = int(n_var.get())
+                h = float(h_var.get())
+            except (tk.TclError, ValueError):
+                messagebox.showerror("参数错误", "请输入有效数字。", parent=win)
+                return
+            if n < 0 or h < 0:
+                messagebox.showerror("参数错误", "数值不能为负。", parent=win)
+                return
+            result["r"] = (n, h)
+            win.destroy()
+
+        btns = ttk.Frame(frm)
+        btns.grid(row=3, column=0, columnspan=2, pady=(12, 0))
+        ttk.Button(btns, text="确定", command=ok).pack(side="left", padx=6)
+        ttk.Button(btns, text="取消", command=win.destroy).pack(side="left",
+                                                                 padx=6)
+        win.protocol("WM_DELETE_WINDOW", win.destroy)
+        win.bind("<Return>", lambda e: ok())
+        n_spin.focus_set()
+        win.update_idletasks()
+        win.geometry(f"+{self.root.winfo_rootx() + 120}+"
+                     f"{self.root.winfo_rooty() + 120}")
+        win.grab_set()  # modal
+        self.root.wait_window(win)
+        return result.get("r")
+
     def do_prune(self):
-        """Manual prune of tiny stale conversation exports (confirm first)."""
+        """Manual prune of tiny stale conversation exports: ask for the
+        thresholds first, confirm the collected files, then delete."""
         try:
+            thresholds = self._prune_settings_dialog()
+            if thresholds is None:
+                return
+            min_messages, hours = thresholds
             state = core.load_state()
-            targets = core.prune_exports(state, dry_run=True)
+            targets = core.prune_exports(state, min_messages=min_messages,
+                                         hours=hours, dry_run=True)
             if not targets:
-                self.hint.set("没有符合条件的小会话 (≤ "
-                              f"{core.config.MIN_MESSAGES} 条且超过 "
-                              f"{core.config.PRUNE_AFTER_HOURS:g} 小时)。")
+                self.hint.set(f"没有符合条件的小会话 (≤ {min_messages} 条且超过 "
+                              f"{hours:g} 小时)。")
                 return
             names = "\n".join("  " + os.path.basename(f) for f in targets[:8])
             more = f"\n  ...等共 {len(targets)} 个文件" if len(targets) > 8 else ""
             if not messagebox.askyesno(
                     "确认清理",
                     f"将删除 {len(targets)} 个小会话导出文件"
-                    f"(消息数 ≤ {core.config.MIN_MESSAGES} 且超过 "
-                    f"{core.config.PRUNE_AFTER_HOURS:g} 小时):\n"
+                    f"(消息数 ≤ {min_messages} 且超过 {hours:g} 小时):\n"
                     f"{names}{more}\n\n删除后不会自动重新生成。确定?"):
                 return
-            removed = core.prune_exports(state, dry_run=False)
+            removed = core.prune_exports(state, min_messages=min_messages,
+                                         hours=hours, dry_run=False)
             core.save_state(state)
-            self.hint.set(f"已清理 {len(removed)} 个小会话文件。")
+            self.hint.set(f"已清理 {len(removed)} 个小会话文件 "
+                          f"(n={min_messages}, {hours:g}h)。")
         except Exception as e:
             self.hint.set(f"清理出错: {e}")
         self.refresh_exports()

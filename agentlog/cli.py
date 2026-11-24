@@ -289,18 +289,23 @@ def cmd_build_icon(src):
     build_icon(src)
 
 
-def cmd_prune():
-    """Manually remove exports of tiny stale conversations (<= MIN_MESSAGES
-    messages, newest older than PRUNE_AFTER_HOURS) plus orphaned exports
-    whose source transcripts are already gone."""
+def cmd_prune(min_messages=None, hours=None):
+    """Manually remove exports of tiny stale conversations (<= n messages,
+    newest older than the given hours; defaults from config) plus orphaned
+    exports whose source transcripts are already gone."""
     state = load_state()
-    targets = prune_exports(state, dry_run=True)
+    kw = {}
+    if min_messages is not None:
+        kw["min_messages"] = min_messages
+    if hours is not None:
+        kw["hours"] = hours
+    targets = prune_exports(state, dry_run=True, **kw)
     if not targets:
         print("nothing to prune.")
         return
     for f in targets:
         print("  would remove:", os.path.relpath(f, config.HERE))
-    removed = prune_exports(state, dry_run=False)
+    removed = prune_exports(state, dry_run=False, **kw)
     save_state(state)
     print(f"pruned {len(removed)} file(s); regeneration is blocked by the "
           f"state marker until a conversation gets new messages.")
@@ -356,6 +361,12 @@ def main():
                     default=["md"],
                     help="Output format(s): md (default), txt, json. "
                          "Multiple formats can be specified.")
+    ap.add_argument("-n", "--min-messages", type=int, default=None,
+                    help="prune: message-count threshold (default: %d)"
+                         % config.MIN_MESSAGES)
+    ap.add_argument("--hours", type=float, default=None,
+                    help="prune: conversation idle hours threshold "
+                         "(default: %g)" % config.PRUNE_AFTER_HOURS)
     args = ap.parse_args()
 
     # Update the mutable run-time options via the config module.
@@ -390,4 +401,4 @@ def main():
     elif args.action == "route":
         cmd_route()
     elif args.action == "prune":
-        cmd_prune()
+        cmd_prune(min_messages=args.min_messages, hours=args.hours)

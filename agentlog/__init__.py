@@ -15,7 +15,7 @@ from .config import (HERE, OUTPUT_ROOT, ICON_PATH, POLL_SECONDS,
                      THINKING_DIR, BJ, THINK_TYPES, SKIP_TYPES, TEXT_TYPES)
 from .timeutil import parse_ts, fmt, fmt_file, path_tail
 from .extract import (extract_text, looks_internal, decode_folder_cwd,
-                      resolve_cwd, clean_title, first_user_title)
+                      resolve_cwd, clean_title, first_user_title, should_prune)
 from .parsers import (PARSERS, DEFAULT_AGENTS, load_agents, AGENTS,
                       parse_codebuddy, parse_pi, parse_claude, parse_opencode,
                       parse_generic)

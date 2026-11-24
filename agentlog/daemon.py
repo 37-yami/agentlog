@@ -10,7 +10,7 @@ from .capture import CAPTURE_DIR, PROXY_PORT, covered_key, ingest_capture, norm_
 from .config import (IGNORE_DIR_PARTS, LOG_FILE, POLL_SECONDS,
                      STATE_FILE)
 from .export import cleanup_exports, write_export
-from .extract import clean_title, first_user_title, is_probe
+from .extract import clean_title, first_user_title, is_probe, should_prune
 from .opencode_db import ingest_opencode_db
 from .parsers import AGENTS
 from .timeutil import fmt, path_tail
@@ -85,6 +85,20 @@ def ingest_jsonl_agent(watch, state):
         # The proxy capture is authoritative for covered projects.
         if covered_key(agent, cwd) in state.get("_capture_covered", {}):
             continue
+        key = f"{agent}:grp:{cwd}|{title}"
+        stem = f"{path_tail(cwd)}-{title}"
+        # Auto-prune tiny conversations that are safely in the past. Not
+        # adding the stem to `keep` makes cleanup_exports() remove the old
+        # file; the data-derived condition also guarantees it never comes
+        # back on later scans.
+        if should_prune(g["msgs"]):
+            if state.get(key, {}).get("pruned") is not True:
+                log(f"[prune] {agent} {stem} ({len(g['msgs'])} msgs, "
+                    f"<={config.MIN_MESSAGES} and older than "
+                    f"{config.PRUNE_AFTER_HOURS:g}h)")
+                state[key] = {"mtime": g["mtime"], "size": len(g["msgs"]),
+                              "out": None, "pruned": True}
+            continue
         seen = set()
         uniq = []
         for m in g["msgs"]:
@@ -94,8 +108,6 @@ def ingest_jsonl_agent(watch, state):
             seen.add(k)
             uniq.append(m)
         uniq.sort(key=lambda m: (m[0] is None, m[0]))
-        key = f"{agent}:grp:{cwd}|{title}"
-        stem = f"{path_tail(cwd)}-{title}"
         write_export(agent, cwd, None, g["start"], uniq, key,
                      g["mtime"], len(uniq), state, title=title,
                      include_thinking=config.INCLUDE_THINKING,

@@ -8,7 +8,7 @@ from . import config
 from .capture import covered_key, norm_cwd
 from .config import DROP_PRE_TOOL_ASSISTANT
 from .export import cleanup_exports, write_export
-from .extract import clean_title, first_user_title, is_probe
+from .extract import clean_title, first_user_title, is_probe, should_prune
 from .timeutil import parse_ts, path_tail
 
 FORK_SUFFIX_RE = re.compile(r"\s*\(fork\s*#\d+\)\s*$")
@@ -206,6 +206,20 @@ def ingest_opencode_db(watch, state):
             # proxy capture takes precedence for covered projects
             if covered_key(agent, cwd) in state.get("_capture_covered", {}):
                 continue
+            key = f"opencode-db:grp:{cwd}|{gtitle}"
+            stem = f"{path_tail(cwd)}-{gtitle}"
+            # Auto-prune tiny conversations that are safely in the past (see
+            # daemon.ingest_jsonl_agent; the stem stays out of `keep` so the
+            # old export file is removed and never regenerated).
+            if should_prune(g["msgs"]):
+                if state.get(key, {}).get("pruned") is not True:
+                    log(f"[prune] {agent} {stem} ({len(g['msgs'])} msgs, "
+                        f"<={config.MIN_MESSAGES} and older than "
+                        f"{config.PRUNE_AFTER_HOURS:g}h)")
+                    state[key] = {"mtime": g["tupdate"] / 1000.0,
+                                  "size": len(g["msgs"]),
+                                  "out": None, "pruned": True}
+                continue
             # Dedupe messages copied into forked/compacted sessions, then
             # order chronologically.
             seen = set()
@@ -217,13 +231,12 @@ def ingest_opencode_db(watch, state):
                 seen.add(k)
                 uniq.append((ts, role, text, thinking))
             uniq.sort(key=lambda m: (m[0] is None, m[0]))
-            key = f"opencode-db:grp:{cwd}|{gtitle}"
-            mtime = g["tupdate"] / 1000.0
             write_export(agent, cwd, None, parse_ts(g["tcreate"]), uniq,
-                         key, mtime, len(uniq), state, title=gtitle,
+                         key, g["tupdate"] / 1000.0, len(uniq), state,
+                         title=gtitle,
                          include_thinking=config.INCLUDE_THINKING,
                          output_formats=config.OUTPUT_FORMATS)
-            keep.setdefault(cwd, set()).add(f"{path_tail(cwd)}-{gtitle}")
+            keep.setdefault(cwd, set()).add(stem)
         for cwd in {c for (c, _t) in groups}:
             cleanup_exports(agent, cwd, keep.get(cwd, set()), log=log)
     finally:

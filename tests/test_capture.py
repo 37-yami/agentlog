@@ -14,6 +14,10 @@ class TestCapture(unittest.TestCase):
         self.tmp = tempfile.mkdtemp(prefix="agcap_")
         self.old_cap = CAPTURE_DIR
         self.old_root = config.OUTPUT_ROOT
+        # These fixtures use fixed old timestamps; disable auto-prune so the
+        # prune tests (test_prune.py) own that behaviour exclusively.
+        self.old_min = config.MIN_MESSAGES
+        config.MIN_MESSAGES = 0
         import agentlog.capture as cap
         cap.CAPTURE_DIR = os.path.join(self.tmp, "capture")
         cap._capture_cache.clear()
@@ -24,6 +28,7 @@ class TestCapture(unittest.TestCase):
         self.cap.CAPTURE_DIR = self.old_cap
         self.cap._capture_cache.clear()
         config.OUTPUT_ROOT = self.old_root
+        config.MIN_MESSAGES = self.old_min
         shutil.rmtree(self.tmp, ignore_errors=True)
 
     def _turn(self, day, ts, u, a):

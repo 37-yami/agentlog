@@ -47,6 +47,9 @@ class TestIngestOpencodeDb(unittest.TestCase):
         self.db = os.path.join(self.tmp, "oc.db")
         self.old_root = config.OUTPUT_ROOT
         config.OUTPUT_ROOT = os.path.join(self.tmp, "out")
+        # Fixtures use tiny epoch timestamps (1970): disable auto-prune here.
+        self.old_min = config.MIN_MESSAGES
+        config.MIN_MESSAGES = 0
         import agentlog.opencode_db as odb
         self.old_path = odb.opencode_db_path
         odb.opencode_db_path = lambda: self.db
@@ -55,6 +58,7 @@ class TestIngestOpencodeDb(unittest.TestCase):
     def tearDown(self):
         self.odb.opencode_db_path = self.old_path
         config.OUTPUT_ROOT = self.old_root
+        config.MIN_MESSAGES = self.old_min
         shutil.rmtree(self.tmp, ignore_errors=True)
 
     def test_forks_merge_tabs_split_probes_skip(self):

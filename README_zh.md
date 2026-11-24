@@ -258,6 +258,21 @@ cp agents.example.json agents.json   # 可选;按需编辑
 - 丢弃工具调用前紧邻的 assistant 叙述(即"自言自语"的思考行),
 - 忽略 `subagents/` 目录(那是子 agent 的内部对话,不是独立会话)。
 
+## 自动清理小会话
+
+消息数 **≤ 5** 且最后一条消息早于 **24 小时**的对话组会被自动清理(不导出,
+已生成的旧文件也会删除)。24 小时的年龄门槛保证正在进行的对话绝不会被误删,
+且清理条件来自源数据本身,删除后不会被后续扫描重新生成。
+
+两个门槛都可以修改(`agentlog/config.py`,或用环境变量覆盖):
+
+| 配置 | 默认 | 环境变量 |
+|---|---|---|
+| `MIN_MESSAGES` | `5` | `AGENTLOG_MIN_MSGS` |
+| `PRUNE_AFTER_HOURS` | `24` | `AGENTLOG_PRUNE_HOURS` |
+
+清理动作会记录在 `agentlog.log` 中(`[prune]` 前缀),只记一次。
+
 ## 本地路由代理(实验性)
 
 除了读取各 agent 自己的存储文件,agentlog 还内置了一个**本地 HTTP 代理**

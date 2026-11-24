@@ -16,9 +16,13 @@ class ExportBase(unittest.TestCase):
         self.tmp = tempfile.mkdtemp(prefix="agtest_")
         self.old_root = config.OUTPUT_ROOT
         config.OUTPUT_ROOT = os.path.join(self.tmp, "out")
+        # Fixed old timestamps in fixtures: keep prune behaviour out of here.
+        self.old_min = config.MIN_MESSAGES
+        config.MIN_MESSAGES = 0
 
     def tearDown(self):
         config.OUTPUT_ROOT = self.old_root
+        config.MIN_MESSAGES = self.old_min
         shutil.rmtree(self.tmp, ignore_errors=True)
 
     def msgs(self):

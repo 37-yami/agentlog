@@ -27,6 +27,12 @@ OUTPUT_FORMATS = ["md"]
 INCLUDE_THINKING = False
 # Subfolder for files with thinking content
 THINKING_DIR = "_thinking"
+# Auto-prune: conversation groups with fewer messages than MIN_MESSAGES are
+# not exported (and their old export files are removed) once their newest
+# message is older than PRUNE_AFTER_HOURS. The age guard protects fresh /
+# ongoing conversations. Mutable via AGENTLOG_MIN_MSGS / AGENTLOG_PRUNE_HOURS.
+MIN_MESSAGES = int(os.environ.get("AGENTLOG_MIN_MSGS", "5"))
+PRUNE_AFTER_HOURS = float(os.environ.get("AGENTLOG_PRUNE_HOURS", "24"))
 
 BJ = timedelta(hours=8)  # Beijing time is fixed UTC+8
 

@@ -148,6 +148,11 @@ Prefer a window over the command line? There is a tiny, zero-dependency UI
 python agentlog_gui.py
 ```
 
+The UI uses a dark theme (dark widgets + selectable background). The
+**"背景"** button in the top bar offers 6 preset solid colors, a custom
+color picker (overly bright picks are dimmed automatically to keep text
+readable) and a reset; the choice persists to a local `agentlog_gui.json`.
+
 ### Features
 
 - **Status display** (running / stopped and pid), plus **Start / Stop /

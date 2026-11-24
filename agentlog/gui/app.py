@@ -11,18 +11,21 @@ sync. Run:  python agentlog_gui.py
 
 import os
 import sys
+import json
 import ctypes
 import threading
 import tkinter as tk
-from tkinter import ttk, messagebox
+from tkinter import ttk, messagebox, filedialog
 
 import agentlog as core  # reuse cmd_*/scan_once/paths
 from agentlog import config
+from agentlog.gui import theme
 from agentlog.gui.sessions import collect_sessions
 from agentlog.gui.tray import build_tray
 
 OUTPUT_ROOT = core.OUTPUT_ROOT
 ICON_PATH = core.ICON_PATH  # optional .ico next to the script
+GUI_CFG = os.path.join(core.HERE, "agentlog_gui.json")
 
 
 # --------------------------------------------------------------------------
@@ -41,6 +44,9 @@ class AgentLogGUI:
                 root.iconbitmap(ICON_PATH)
             except Exception:
                 pass
+        # dark theme; background color is user-selectable and persisted
+        self.bg_color = self._load_gui_cfg().get("bg_color") or theme.CONTENT
+        self._apply_theme()
         self._build_widgets()
         self.refresh_status()
         self.refresh_exports()
@@ -49,6 +55,78 @@ class AgentLogGUI:
 
         # minimize-to-tray instead of quitting
         root.protocol("WM_DELETE_WINDOW", self.on_close)
+
+    # ---- background color ----
+    def _load_gui_cfg(self):
+        try:
+            with open(GUI_CFG, encoding="utf-8") as fh:
+                return json.load(fh)
+        except (OSError, ValueError):
+            return {}
+
+    def _save_gui_cfg(self, **kv):
+        cfg = self._load_gui_cfg()
+        cfg.update(kv)
+        try:
+            with open(GUI_CFG, "w", encoding="utf-8") as fh:
+                json.dump(cfg, fh, ensure_ascii=False, indent=2)
+        except OSError:
+            pass
+
+    def _apply_theme(self):
+        self.bg_color = theme.apply_dark_theme(self.root, self.bg_color)
+
+    def set_background(self, color):
+        self.bg_color = color
+        self._apply_theme()
+        self._save_gui_cfg(bg_color=color)
+
+    def pick_background(self):
+        """Small popup: preset swatches + custom color + default."""
+        win = tk.Toplevel(self.root)
+        win.title("背景颜色")
+        win.configure(bg=theme.CARD)
+        win.transient(self.root)
+        win.resizable(False, False)
+        frm = tk.Frame(win, bg=theme.CARD, padx=14, pady=14)
+        frm.pack(fill="both", expand=True)
+
+        tk.Label(frm, text="选择背景颜色", bg=theme.CARD, fg=theme.TEXT,
+                 font=theme.FONT).pack(anchor="w", pady=(0, 8))
+        row = tk.Frame(frm, bg=theme.CARD)
+        row.pack(anchor="w")
+        for color in theme.PRESET_COLORS:
+            chip = tk.Canvas(row, width=34, height=24, bg=theme.CARD,
+                             highlightthickness=1,
+                             highlightbackground=theme.SUB, cursor="hand2")
+            chip.create_rectangle(3, 3, 31, 21, fill=color, outline="")
+            chip.pack(side="left", padx=5)
+            chip.bind("<Button-1>",
+                      lambda e, c=color: (self.set_background(c), win.destroy()))
+        btns = tk.Frame(frm, bg=theme.CARD)
+        btns.pack(anchor="w", pady=(12, 0))
+
+        def custom():
+            from tkinter import colorchooser
+            r = colorchooser.askcolor(parent=win,
+                                      initialcolor=self.bg_color,
+                                      title="选择背景颜色")
+            if r and r[1]:
+                self.set_background(r[1])
+                win.destroy()
+
+        ttk.Button(btns, text="自定义颜色…", command=custom).pack(side="left",
+                                                                 padx=4)
+        ttk.Button(btns, text="恢复默认",
+                   command=lambda: (self.set_background(theme.CONTENT),
+                                    win.destroy())).pack(side="left", padx=4)
+        ttk.Button(btns, text="取消", command=win.destroy).pack(side="left",
+                                                                padx=4)
+        win.update_idletasks()
+        win.geometry(f"+{self.root.winfo_rootx() + 160}"
+                     f"+{self.root.winfo_rooty() + 160}")
+        win.grab_set()
+        self.root.wait_window(win)
 
     def _build_widgets(self):
         # Top control bar
@@ -69,6 +147,8 @@ class AgentLogGUI:
                                         variable=self.auto_var,
                                         command=self.toggle_autostart)
         self.auto_chk.pack(side="right")
+        ttk.Button(f, text="背景", command=self.pick_background).pack(
+            side="right", padx=(0, 8))
 
         # exports tree with scrollbar
         tree_frame = ttk.Frame(self.root)
@@ -237,10 +317,10 @@ class AgentLogGUI:
                         command=self._toggle_select_all).pack(side="left", padx=(0, 6))
         ttk.Button(sel_bar, text="取消全选", command=self._deselect_all).pack(
             side="left", padx=3)
-        ttk.Button(sel_bar, text="删除选中", command=self._delete_selected).pack(
-            side="left", padx=3)
+        ttk.Button(sel_bar, text="删除选中", style="Danger.TButton",
+                   command=self._delete_selected).pack(side="left", padx=3)
         self.sel_count_var = tk.StringVar(value="")
-        ttk.Label(sel_bar, textvariable=self.sel_count_var, foreground="#666").pack(
+        ttk.Label(sel_bar, textvariable=self.sel_count_var, foreground=theme.SUB).pack(
             side="left", padx=10)
         ttk.Button(sel_bar, text="打开导出目录", command=self.open_dir).pack(
             side="right", padx=3)
@@ -254,7 +334,7 @@ class AgentLogGUI:
         ttk.Button(bottom, text="退出", command=self.quit_app).pack(
             side="right", padx=6)
         self.hint = tk.StringVar(value="")
-        ttk.Label(bottom, textvariable=self.hint, foreground="#666").pack(
+        ttk.Label(bottom, textvariable=self.hint, foreground=theme.SUB).pack(
             side="left", padx=10)
 
     # ---- status ----
@@ -316,7 +396,7 @@ class AgentLogGUI:
                              textvariable=h_var, width=8)
         h_spin.grid(row=1, column=1, sticky="w", padx=(8, 20))
 
-        ttk.Label(frm, foreground="#666",
+        ttk.Label(frm, foreground=theme.SUB,
                   text="清理: 消息数 ≤ n 且最后一条消息早于设定小时数\n"
                        "(源数据不会被改动,仅删导出文件且不会重新生成)"
                   ).grid(row=2, column=0, columnspan=2, sticky="w",

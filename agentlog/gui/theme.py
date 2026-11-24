@@ -94,7 +94,9 @@ class Card(tk.Canvas):
         self.redraw()
 
     def redraw(self):
-        self.delete("all")
+        # Only remove the decorative layer (tag "card_bg") - NEVER delete
+        # the window item holding `inner`, or all child widgets vanish.
+        self.delete("card_bg")
         w = self.winfo_width()
         h = self.winfo_height()
         if w < 4 or h < 4:
@@ -111,9 +113,10 @@ class Card(tk.Canvas):
 
         arc(r, r, 180, 270); arc(w - r, r, 270, 360)
         arc(w - r, h - r, 0, 90); arc(r, h - r, 90, 180)
-        self.create_polygon(pts, smooth=True, fill=self._card_bg, outline="")
+        self.create_polygon(pts, smooth=True, fill=self._card_bg,
+                            outline="", tags="card_bg")
         self.coords(self._win, r // 2 + 8, r // 2 + 4)
-        self.itemconfigure(self._win, width=w - r - 16, height=h - r - 8)
+        self.itemconfigure(self._win, width=w - r - 16, height=h - r - 10)
         self.tag_raise(self._win)
 
 

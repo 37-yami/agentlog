@@ -103,6 +103,8 @@ class AgentLogGUI:
             self._wp_label.image = photo
         else:
             self._wp_label.configure(image="", bg=self.bg_color)
+        for card in getattr(self, "_cards", []):
+            card.redraw()
 
     def set_background(self, color):
         self.bg_color = color
@@ -120,6 +122,9 @@ class AgentLogGUI:
         background (image or solid color)."""
         card = theme.Card(self.root, bg=theme.CARD)
         card.pack(**pack)
+        # guarantee at least one redraw once the packer has sized the card
+        # (the <Configure> binding can fire before geometry settles)
+        card.after_idle(card.redraw)
         self._cards.append(card)
         return card
 
@@ -204,6 +209,11 @@ class AgentLogGUI:
             side="right", padx=(0, 8))
 
         # exports tree with scrollbar (rounded card)
+        # NOTE packed BEFORE the bottom bar: with the bottom card packed
+        # after an expand widget its canvas window item can end up unmapped
+        # on some Tk builds; packing bottom early is visually identical.
+        bottom = self._card(side="bottom", fill="x",
+                            padx=10, pady=(8, 10)).inner
         tree_frame = self._card(fill="both", expand=True,
                                  padx=10, pady=(8, 0)).inner
 
@@ -379,9 +389,7 @@ class AgentLogGUI:
             side="right", padx=3)
         self.tree.bind("<<TreeviewSelect>>", self._on_select_change)
 
-        # Bottom bar (rounded card; only minimize and quit)
-        bottom = self._card(side="bottom", fill="x",
-                            padx=10, pady=(8, 10)).inner
+        # Bottom bar content (the bottom card itself was packed above)
         ttk.Button(bottom, text="最小化到托盘", command=self.minimize).pack(
             side="left", padx=6)
         ttk.Button(bottom, text="退出", command=self.quit_app).pack(
